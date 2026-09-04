@@ -27,6 +27,7 @@ const deleteTarget = ref(null)
 const usage = ref(null)
 const usageModel = ref(null)
 const usageLoading = ref(false)
+const customModelName = ref('')
 const catalog = ref([])
 const catalogLoading = ref(false)
 
@@ -37,6 +38,7 @@ const selectedProvider = computed(() => catalog.value.find((item) => item.value 
 const availableTypes = computed(() => selectedProvider.value?.types || Object.entries(typeLabels).map(([value, label]) => ({ value, label, models: [] })))
 const selectedType = computed(() => availableTypes.value.find((item) => item.value === form.model_type))
 const suggestedModels = computed(() => selectedType.value?.models || [])
+const hasModelSuggestions = computed(() => suggestedModels.value.length > 0)
 
 function defaultForm() {
   return {
@@ -62,10 +64,12 @@ function handleProviderChange() {
   const firstType = availableTypes.value[0]
   form.model_type = firstType?.value || 'chat'
   form.model_name = ''
+  customModelName.value = ''
 }
 
 function handleTypeChange() {
   form.model_name = ''
+  customModelName.value = ''
 }
 
 function apiError(error, fallback) {
@@ -97,18 +101,22 @@ async function loadModels() {
 
 function openCreate() {
   Object.assign(form, defaultForm())
+  customModelName.value = ''
   editingId.value = null
   formError.value = ''
   showForm.value = true
 }
 
 function openEdit(model) {
+  const providerCatalog = catalog.value.find((item) => item.value === model.provider)
+  const knownModel = providerCatalog?.types?.some((type) => type.models.includes(model.model_name))
   Object.assign(form, {
-    name: model.name, provider: model.provider, model_name: model.model_name,
+    name: model.name, provider: model.provider, model_name: knownModel ? model.model_name : '__custom__',
     model_type: model.model_type, api_key: '', api_base_url: model.api_base_url,
     parametersText: JSON.stringify(model.parameters || {}, null, 2),
     is_default: model.is_default, is_active: model.is_active, priority: model.priority,
   })
+  customModelName.value = knownModel ? '' : model.model_name
   editingId.value = model.id
   formError.value = ''
   showForm.value = true
@@ -129,7 +137,8 @@ async function saveModel() {
     return
   }
   const payload = {
-    name: form.name.trim(), provider: form.provider, model_name: form.model_name.trim(),
+    name: form.name.trim(), provider: form.provider,
+    model_name: (form.model_name === '__custom__' ? customModelName.value : form.model_name).trim(),
     model_type: form.model_type, api_base_url: form.api_base_url.trim(), parameters,
     is_default: form.is_default, is_active: form.is_active, priority: Number(form.priority),
   }
@@ -234,13 +243,13 @@ onMounted(async () => {
       </section>
     </div>
 
-    <div v-if="showForm" class="modal-backdrop" @click.self="showForm = false">
-      <section class="config-modal" role="dialog" aria-modal="true" aria-labelledby="model-form-title">
+    <div v-if="showForm" class="modal-backdrop" @click="showForm = false">
+      <section class="config-modal" role="dialog" aria-modal="true" aria-labelledby="model-form-title" @click.stop>
         <header><div><small>{{ editingId ? 'EDIT MODEL' : 'NEW MODEL' }}</small><h2 id="model-form-title">{{ editingId ? '编辑模型配置' : '添加模型配置' }}</h2></div><button aria-label="关闭" @click="showForm = false">×</button></header>
         <div class="config-form">
           <label><span>配置名称 *</span><input v-model="form.name" placeholder="例如：主对话模型"></label>
           <div class="form-row"><label><span>提供商 *</span><select v-model="form.provider" :disabled="catalogLoading" @change="handleProviderChange"><option v-for="option in catalog" :key="option.value" :value="option.value">{{ option.label }}</option></select></label><label><span>模型类型 *</span><select v-model="form.model_type" @change="handleTypeChange"><option v-for="option in availableTypes" :key="option.value" :value="option.value">{{ option.label }}</option></select></label></div>
-          <label><span>模型名称 *</span><input v-model="form.model_name" list="model-name-suggestions" placeholder="输入或从建议列表选择"><datalist id="model-name-suggestions"><option v-for="modelName in suggestedModels" :key="modelName" :value="modelName"></option></datalist><small v-if="suggestedModels.length">已根据供应商和模型类型加载 {{ suggestedModels.length }} 个推荐模型，也可以直接输入自定义模型名。</small><small v-else>当前供应商未提供固定目录，请输入部署名称或自定义模型名。</small></label>
+          <label><span>模型名称 *</span><select v-if="hasModelSuggestions" v-model="form.model_name"><option value="">请选择模型</option><option v-for="modelName in suggestedModels" :key="modelName" :value="modelName">{{ modelName }}</option><option value="__custom__">＋ 自定义模型名称</option></select><input v-if="!hasModelSuggestions || form.model_name === '__custom__'" v-model="customModelName" placeholder="输入部署名称或自定义模型名"><small v-if="hasModelSuggestions">已加载 {{ suggestedModels.length }} 个推荐模型，也可以选择“自定义模型名称”。</small><small v-else>当前供应商未提供固定目录，请输入部署名称或自定义模型名。</small></label>
           <label><span>API 地址</span><input v-model="form.api_base_url" placeholder="留空则使用提供商默认地址"></label>
           <label><span>API Key</span><input v-model="form.api_key" type="password" :placeholder="editingId ? '留空表示保留现有密钥' : '本地模型可留空'" autocomplete="new-password"><small>密钥只会提交一次并加密保存，页面不会读取或回显。</small></label>
           <label><span>模型参数（JSON）</span><textarea v-model="form.parametersText" rows="5" spellcheck="false"></textarea></label>

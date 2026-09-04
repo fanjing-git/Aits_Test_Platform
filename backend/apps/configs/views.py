@@ -13,7 +13,7 @@ from rest_framework.response import Response
 
 from apps.configs.models import ModelConfig, PromptConfig
 from apps.configs.serializers import ModelConfigSerializer, PromptConfigSerializer
-from apps.configs.services import ConnectionTester, UnavailableConnectionTester
+from apps.configs.services import ConnectionTester, ProviderConnectionTester
 from apps.users.permissions import IsAdminRole
 
 
@@ -30,7 +30,7 @@ MODEL_CATALOG = {
     "google": {"label": "Google Gemini", "types": {"chat": {"label": "对话模型", "models": ["gemini-2.5-pro", "gemini-2.5-flash"]}, "embedding": {"label": "向量模型", "models": ["text-embedding-005"]}, "vision": {"label": "视觉模型", "models": ["gemini-2.5-pro", "gemini-2.5-flash"]}}},
     "qwen": {"label": "通义千问", "types": {"chat": {"label": "对话模型", "models": ["qwen-plus", "qwen-max", "qwen-turbo"]}, "embedding": {"label": "向量模型", "models": ["text-embedding-v3"]}, "vision": {"label": "视觉模型", "models": ["qwen-vl-max"]}}},
     "baidu": {"label": "文心一言", "types": {"chat": {"label": "对话模型", "models": ["ernie-4.5-turbo-32k", "ernie-speed-128k"]}, "embedding": {"label": "向量模型", "models": ["embedding-v1"]}, "vision": {"label": "视觉模型", "models": ["ernie-4.5-turbo-vl"]}}},
-    "deepseek": {"label": "DeepSeek", "types": {"chat": {"label": "对话模型", "models": ["deepseek-chat", "deepseek-reasoner"]}}},
+    "deepseek": {"label": "DeepSeek", "types": {"chat": {"label": "对话模型", "models": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v3.2", "deepseek-v3", "deepseek-chat", "deepseek-reasoner", "deepseek-coder"]}, "vision": {"label": "视觉模型", "models": ["deepseek-v4-flash-vision-exp"]}}},
     "zhipu": {"label": "智谱", "types": {"chat": {"label": "对话模型", "models": ["glm-4.5", "glm-4.5-air"]}, "vision": {"label": "视觉模型", "models": ["glm-4.1v-thinking-flash"]}}},
     "azure": {"label": "Azure OpenAI", "types": {"chat": {"label": "对话模型", "models": []}, "embedding": {"label": "向量模型", "models": []}, "vision": {"label": "视觉模型", "models": []}}},
     "custom": {"label": "OpenAI 兼容", "types": {"chat": {"label": "对话模型", "models": []}, "embedding": {"label": "向量模型", "models": []}, "vision": {"label": "视觉模型", "models": []}}},
@@ -44,7 +44,7 @@ class ModelConfigViewSet(viewsets.ModelViewSet):
     queryset = ModelConfig.objects.all()
     serializer_class = ModelConfigSerializer
     permission_classes = (IsAdminRole,)
-    connection_tester: ConnectionTester = UnavailableConnectionTester()
+    connection_tester: ConnectionTester = ProviderConnectionTester()
 
     @action(detail=False, methods=("get",))
     def catalog(self, request: Request) -> Response:
