@@ -1,0 +1,12 @@
+Django==5.0.14
+djangorestframework==3.15.2
+djangorestframework-simplejwt==5.5.1
+celery==5.4.0
+cryptography==50.0.1
+cffi==2.1.1
+pycparser==3.0
+langchain==0.3.27
+langgraph==0.2.76
+psycopg2-binary==2.9.10
+pgvector==0.3.6
+redis==5.2.1

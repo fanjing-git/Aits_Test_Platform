@@ -1,0 +1,12 @@
+.chat-layout {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  min-height: 100%;
+}
+
+.chat-message {
+  max-width: 80%;
+  padding: 12px 16px;
+  border-radius: 14px;
+  background: var(--color-surface);
+}

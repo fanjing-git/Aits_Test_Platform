@@ -1,0 +1,14 @@
+:root {
+  --color-bg: #f2f5f8;
+  --color-surface: #ffffff;
+  --color-text: #172033;
+  --color-text-muted: #667085;
+  --color-primary: #315efb;
+  --color-border: #e5eaf2;
+  --shadow-card: 0 18px 45px rgb(23 32 51 / 10%);
+  --radius-card: 18px;
+  --content-width: 1200px;
+  --color-ink: #08131f;
+  --color-cyan: #15d6c4;
+  --color-cyan-bright: #6af5e7;
+}
