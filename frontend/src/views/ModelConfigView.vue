@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import {
   createModelConfig,
   deleteModelConfig,
+  getModelCatalog,
   getModelUsage,
   listModelConfigs,
   testModelConnection,
@@ -12,12 +13,6 @@ import {
 } from '../api/models'
 import WorkspaceShell from '../components/workspace/WorkspaceShell.vue'
 
-const providerOptions = [
-  ['openai', 'OpenAI'], ['anthropic', 'Anthropic'], ['google', 'Google Gemini'],
-  ['qwen', '通义千问'], ['baidu', '文心一言'], ['deepseek', 'DeepSeek'],
-  ['zhipu', '智谱'], ['azure', 'Azure OpenAI'], ['custom', 'OpenAI 兼容'],
-  ['local', 'Ollama / vLLM'],
-]
 const typeLabels = { chat: '对话模型', embedding: '向量模型', vision: '视觉模型' }
 
 const models = ref([])
@@ -32,10 +27,16 @@ const deleteTarget = ref(null)
 const usage = ref(null)
 const usageModel = ref(null)
 const usageLoading = ref(false)
+const catalog = ref([])
+const catalogLoading = ref(false)
 
 const form = reactive(defaultForm())
 const activeCount = computed(() => models.value.filter((item) => item.is_active).length)
 const defaultCount = computed(() => models.value.filter((item) => item.is_default).length)
+const selectedProvider = computed(() => catalog.value.find((item) => item.value === form.provider))
+const availableTypes = computed(() => selectedProvider.value?.types || Object.entries(typeLabels).map(([value, label]) => ({ value, label, models: [] })))
+const selectedType = computed(() => availableTypes.value.find((item) => item.value === form.model_type))
+const suggestedModels = computed(() => selectedType.value?.models || [])
 
 function defaultForm() {
   return {
@@ -43,6 +44,28 @@ function defaultForm() {
     api_base_url: '', parametersText: '{\n  "temperature": 0.2\n}', is_default: false,
     is_active: true, priority: 100,
   }
+}
+
+async function loadCatalog() {
+  catalogLoading.value = true
+  try {
+    const result = await getModelCatalog()
+    catalog.value = result.providers || []
+  } catch {
+    // The form still works with the three generic model types if catalog is unavailable.
+  } finally {
+    catalogLoading.value = false
+  }
+}
+
+function handleProviderChange() {
+  const firstType = availableTypes.value[0]
+  form.model_type = firstType?.value || 'chat'
+  form.model_name = ''
+}
+
+function handleTypeChange() {
+  form.model_name = ''
 }
 
 function apiError(error, fallback) {
@@ -54,6 +77,10 @@ function apiError(error, fallback) {
     if (first) return `${first[0]}：${Array.isArray(first[1]) ? first[1][0] : first[1]}`
   }
   return fallback
+}
+
+function providerLabel(value) {
+  return catalog.value.find((item) => item.value === value)?.label || value
 }
 
 async function loadModels() {
@@ -161,7 +188,9 @@ async function confirmDelete() {
   }
 }
 
-onMounted(loadModels)
+onMounted(async () => {
+  await Promise.all([loadModels(), loadCatalog()])
+})
 </script>
 
 <template>
@@ -192,7 +221,7 @@ onMounted(loadModels)
             <thead><tr><th>配置 / 模型</th><th>类型</th><th>接入状态</th><th>路由</th><th>凭据</th><th>操作</th></tr></thead>
             <tbody>
               <tr v-for="model in models" :key="model.id">
-                <td><b>{{ model.name }}</b><small>{{ providerOptions.find((item) => item[0] === model.provider)?.[1] || model.provider }} · {{ model.model_name }}</small></td>
+                <td><b>{{ model.name }}</b><small>{{ providerLabel(model.provider) }} · {{ model.model_name }}</small></td>
                 <td><span class="type-chip">{{ typeLabels[model.model_type] }}</span></td>
                 <td><span :class="['status-chip', model.is_active ? 'is-online' : 'is-offline']"><i></i>{{ model.is_active ? '已启用' : '已停用' }}</span></td>
                 <td><b class="priority-value">P{{ model.priority }}</b><small v-if="model.is_default" class="default-label">默认</small></td>
@@ -210,8 +239,8 @@ onMounted(loadModels)
         <header><div><small>{{ editingId ? 'EDIT MODEL' : 'NEW MODEL' }}</small><h2 id="model-form-title">{{ editingId ? '编辑模型配置' : '添加模型配置' }}</h2></div><button aria-label="关闭" @click="showForm = false">×</button></header>
         <div class="config-form">
           <label><span>配置名称 *</span><input v-model="form.name" placeholder="例如：主对话模型"></label>
-          <div class="form-row"><label><span>提供商 *</span><select v-model="form.provider"><option v-for="option in providerOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label><label><span>模型类型 *</span><select v-model="form.model_type"><option value="chat">对话模型</option><option value="embedding">向量模型</option><option value="vision">视觉模型</option></select></label></div>
-          <label><span>模型名称 *</span><input v-model="form.model_name" placeholder="例如：gpt-4o-mini"></label>
+          <div class="form-row"><label><span>提供商 *</span><select v-model="form.provider" :disabled="catalogLoading" @change="handleProviderChange"><option v-for="option in catalog" :key="option.value" :value="option.value">{{ option.label }}</option></select></label><label><span>模型类型 *</span><select v-model="form.model_type" @change="handleTypeChange"><option v-for="option in availableTypes" :key="option.value" :value="option.value">{{ option.label }}</option></select></label></div>
+          <label><span>模型名称 *</span><input v-model="form.model_name" list="model-name-suggestions" placeholder="输入或从建议列表选择"><datalist id="model-name-suggestions"><option v-for="modelName in suggestedModels" :key="modelName" :value="modelName"></option></datalist><small v-if="suggestedModels.length">已根据供应商和模型类型加载 {{ suggestedModels.length }} 个推荐模型，也可以直接输入自定义模型名。</small><small v-else>当前供应商未提供固定目录，请输入部署名称或自定义模型名。</small></label>
           <label><span>API 地址</span><input v-model="form.api_base_url" placeholder="留空则使用提供商默认地址"></label>
           <label><span>API Key</span><input v-model="form.api_key" type="password" :placeholder="editingId ? '留空表示保留现有密钥' : '本地模型可留空'" autocomplete="new-password"><small>密钥只会提交一次并加密保存，页面不会读取或回显。</small></label>
           <label><span>模型参数（JSON）</span><textarea v-model="form.parametersText" rows="5" spellcheck="false"></textarea></label>

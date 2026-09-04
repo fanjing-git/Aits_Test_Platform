@@ -17,6 +17,27 @@ from apps.configs.services import ConnectionTester, UnavailableConnectionTester
 from apps.users.permissions import IsAdminRole
 
 
+MODEL_CATALOG = {
+    "openai": {
+        "label": "OpenAI",
+        "types": {
+            "chat": {"label": "对话模型", "models": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-4o-mini"]},
+            "embedding": {"label": "向量模型", "models": ["text-embedding-3-small", "text-embedding-3-large"]},
+            "vision": {"label": "视觉模型", "models": ["gpt-4o", "gpt-4.1"]},
+        },
+    },
+    "anthropic": {"label": "Anthropic", "types": {"chat": {"label": "对话模型", "models": ["claude-sonnet-4-5", "claude-haiku-4-5"]}, "vision": {"label": "视觉模型", "models": ["claude-sonnet-4-5"]}}},
+    "google": {"label": "Google Gemini", "types": {"chat": {"label": "对话模型", "models": ["gemini-2.5-pro", "gemini-2.5-flash"]}, "embedding": {"label": "向量模型", "models": ["text-embedding-005"]}, "vision": {"label": "视觉模型", "models": ["gemini-2.5-pro", "gemini-2.5-flash"]}}},
+    "qwen": {"label": "通义千问", "types": {"chat": {"label": "对话模型", "models": ["qwen-plus", "qwen-max", "qwen-turbo"]}, "embedding": {"label": "向量模型", "models": ["text-embedding-v3"]}, "vision": {"label": "视觉模型", "models": ["qwen-vl-max"]}}},
+    "baidu": {"label": "文心一言", "types": {"chat": {"label": "对话模型", "models": ["ernie-4.5-turbo-32k", "ernie-speed-128k"]}, "embedding": {"label": "向量模型", "models": ["embedding-v1"]}, "vision": {"label": "视觉模型", "models": ["ernie-4.5-turbo-vl"]}}},
+    "deepseek": {"label": "DeepSeek", "types": {"chat": {"label": "对话模型", "models": ["deepseek-chat", "deepseek-reasoner"]}}},
+    "zhipu": {"label": "智谱", "types": {"chat": {"label": "对话模型", "models": ["glm-4.5", "glm-4.5-air"]}, "vision": {"label": "视觉模型", "models": ["glm-4.1v-thinking-flash"]}}},
+    "azure": {"label": "Azure OpenAI", "types": {"chat": {"label": "对话模型", "models": []}, "embedding": {"label": "向量模型", "models": []}, "vision": {"label": "视觉模型", "models": []}}},
+    "custom": {"label": "OpenAI 兼容", "types": {"chat": {"label": "对话模型", "models": []}, "embedding": {"label": "向量模型", "models": []}, "vision": {"label": "视觉模型", "models": []}}},
+    "local": {"label": "Ollama / vLLM", "types": {"chat": {"label": "对话模型", "models": ["llama3.1", "qwen2.5"]}, "embedding": {"label": "向量模型", "models": ["nomic-embed-text"]}, "vision": {"label": "视觉模型", "models": ["llava"]}}},
+}
+
+
 class ModelConfigViewSet(viewsets.ModelViewSet):
     """Manage model configurations without ever returning encrypted secrets."""
 
@@ -24,6 +45,18 @@ class ModelConfigViewSet(viewsets.ModelViewSet):
     serializer_class = ModelConfigSerializer
     permission_classes = (IsAdminRole,)
     connection_tester: ConnectionTester = UnavailableConnectionTester()
+
+    @action(detail=False, methods=("get",))
+    def catalog(self, request: Request) -> Response:
+        """Return safe provider/type/model suggestions for the configuration form."""
+        providers = [
+            {"value": value, "label": item["label"], "types": [
+                {"value": type_value, "label": type_item["label"], "models": type_item["models"]}
+                for type_value, type_item in item["types"].items()
+            ]}
+            for value, item in MODEL_CATALOG.items()
+        ]
+        return Response({"providers": providers})
 
     @action(detail=True, methods=("post",), url_path="test-connection")
     def test_connection(self, request: Request, pk: str | None = None) -> Response:

@@ -1,5 +1,9 @@
 import request from './request'
 
+export function getModelCatalog() {
+  return request.get('/api/configs/models/catalog/')
+}
+
 export function listModelConfigs() {
   return request.get('/api/configs/models/')
 }
