@@ -50,6 +50,7 @@ const router = createRouter({
     },
     { path: '/workspace/environments', name: 'environments', component: () => import('../views/EnvironmentView.vue'), meta: { requiresAuth: true } },
     { path: '/workspace/knowledge', name: 'knowledge', component: () => import('../views/KnowledgeView.vue'), meta: { requiresAuth: true } },
+    { path: '/workspace/skills', name: 'skills', component: () => import('../views/SkillsView.vue'), meta: { requiresAuth: true } },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })
