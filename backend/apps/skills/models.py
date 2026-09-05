@@ -32,6 +32,8 @@ class Skill(models.Model):
     knowledge = models.JSONField("所需知识", default=list, validators=[validate_string_list])
     input_schema = models.JSONField("输入定义", default=dict, validators=[validate_object])
     output_schema = models.JSONField("输出定义", default=dict, validators=[validate_object])
+    runtime_key = models.CharField("运行时绑定", max_length=100, default="configured", blank=True)
+    timeout_seconds = models.PositiveIntegerField("超时秒数", default=30)
     status = models.CharField("状态", max_length=20, choices=Status.choices, default=Status.ENABLED, db_index=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="created_skills", verbose_name="创建者")
     created_at = models.DateTimeField("创建时间", auto_now_add=True); updated_at = models.DateTimeField("更新时间", auto_now=True)

@@ -8,7 +8,7 @@ class SkillSerializer(serializers.ModelSerializer):
     project_name = serializers.CharField(source='project.name', read_only=True)
     class Meta:
         model = Skill
-        fields = ('id','project','project_name','name','version','description','category','category_label','triggers','capabilities','tools','knowledge','input_schema','output_schema','status','status_label','created_by','created_at','updated_at')
+        fields = ('id','project','project_name','name','version','description','category','category_label','triggers','capabilities','tools','knowledge','input_schema','output_schema','runtime_key','timeout_seconds','status','status_label','created_by','created_at','updated_at')
         read_only_fields = ('id','created_by','created_at','updated_at')
     def validate(self, attrs):
         """Enforce global/custom scope and caller project membership."""

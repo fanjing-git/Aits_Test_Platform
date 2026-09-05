@@ -6,6 +6,7 @@ from apps.projects.permissions import is_platform_admin, project_role
 from apps.skills.models import Skill
 from apps.skills.permissions import SkillPermission
 from apps.skills.serializers import SkillSerializer
+from apps.skills.runtime import execute_skill, SkillRuntimeError
 
 class SkillViewSet(viewsets.ModelViewSet):
     """CRUD and lifecycle API for global and project Skills."""
@@ -25,3 +26,13 @@ class SkillViewSet(viewsets.ModelViewSet):
     def toggle(self, request, pk=None):
         """Toggle enabled/disabled state with permission checks."""
         skill = self.get_object(); self.check_object_permissions(request, skill); skill.status = Skill.Status.DISABLED if skill.status == Skill.Status.ENABLED else Skill.Status.ENABLED; skill.save(update_fields=('status','updated_at')); return Response(self.get_serializer(skill).data)
+    @action(detail=True, methods=('post',))
+    def execute(self, request, pk=None):
+        """Execute only through the controlled custom runtime boundary."""
+        skill = self.get_object()
+        self.check_object_permissions(request, skill)
+        try:
+            result = execute_skill(skill, request.data.get('input', request.data))
+        except SkillRuntimeError as exc:
+            return Response({'detail': str(exc), 'status': 'failed'}, status=400)
+        return Response({'status': 'completed', 'result': result})
