@@ -1,0 +1,15 @@
+import request from './request'
+
+export const listKnowledgeBases = () => request.get('/api/knowledge-bases/')
+export const createKnowledgeBase = (payload) => request.post('/api/knowledge-bases/', payload)
+export const updateKnowledgeBase = (id, payload) => request.patch(`/api/knowledge-bases/${id}/`, payload)
+export const deleteKnowledgeBase = (id) => request.delete(`/api/knowledge-bases/${id}/`)
+export const listDocuments = (knowledgeBase) => request.get('/api/knowledge-documents/', { params: { knowledge_base: knowledgeBase } })
+export const uploadDocument = (payload) => request.post('/api/knowledge-documents/', payload, { headers: { 'Content-Type': 'multipart/form-data' } })
+export const parseDocument = (id) => request.post(`/api/knowledge-documents/${id}/parse/`)
+export const indexDocument = (id) => request.post(`/api/knowledge-documents/${id}/index/`)
+export const reviewDocument = (id, payload) => request.post(`/api/knowledge-documents/${id}/review/`, payload)
+export const listQA = (knowledgeBase) => request.get('/api/knowledge-qa/', { params: { knowledge_base: knowledgeBase } })
+export const createQA = (payload) => request.post('/api/knowledge-qa/', payload)
+export const reviewQA = (id, payload) => request.post(`/api/knowledge-qa/${id}/review/`, payload)
+export const searchKnowledge = (payload) => request.post('/api/knowledge-search/', payload)

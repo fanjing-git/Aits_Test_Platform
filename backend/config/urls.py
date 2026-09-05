@@ -13,4 +13,7 @@ urlpatterns = [
     path("api/configs/", include("apps.configs.urls")),
     path("api/", include("apps.projects.urls")),
     path("api/", include("apps.agents.urls")),
+    path("api/", include("apps.environments.urls")),
+    path("api/", include("apps.knowledge.urls")),
+    path("api/", include("apps.skills.urls")),
 ]

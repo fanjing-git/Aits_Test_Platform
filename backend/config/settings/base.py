@@ -28,6 +28,10 @@ INSTALLED_APPS = [
     "apps.configs.apps.ConfigsConfig",
     "apps.projects.apps.ProjectsConfig",
     "apps.agents.apps.AgentsConfig",
+    "apps.environments.apps.EnvironmentsConfig",
+    "apps.knowledge.apps.KnowledgeConfig",
+    "apps.skills.apps.SkillsConfig",
+    "apps.requirement_analysis.apps.RequirementAnalysisConfig",
 ]
 
 REST_FRAMEWORK = {
@@ -93,3 +97,18 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 30 * 60
 CELERY_IMPORTS = ("config.tasks",)
+
+# Exact trusted origins for environment health probes; no wildcard targets.
+ENVIRONMENT_HEALTH_ALLOWED_ORIGINS = tuple(value.strip() for value in os.environ.get("ENVIRONMENT_HEALTH_ALLOWED_ORIGINS", "http://127.0.0.1:8000").split(",") if value.strip())
+
+CELERY_BEAT_SCHEDULE = {
+    "environments-check-all-health": {
+        "task": "environments.check_all_health",
+        "schedule": 300.0,
+    },
+}
+
+KNOWLEDGE_DOCUMENT_ROOT = Path(os.environ.get("KNOWLEDGE_DOCUMENT_ROOT", BASE_DIR / ".runtime" / "knowledge-documents"))
+KNOWLEDGE_DOCUMENT_MAX_BYTES = int(os.environ.get("KNOWLEDGE_DOCUMENT_MAX_BYTES", 10 * 1024 * 1024))
+KNOWLEDGE_CHUNK_SIZE = int(os.environ.get("KNOWLEDGE_CHUNK_SIZE", 500))
+KNOWLEDGE_CHUNK_OVERLAP = int(os.environ.get("KNOWLEDGE_CHUNK_OVERLAP", 50))

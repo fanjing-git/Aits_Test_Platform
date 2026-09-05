@@ -26,6 +26,7 @@ const sceneOptions = [
 const prompts = ref([])
 const loading = ref(true)
 const loadError = ref('')
+const refreshFeedback = ref('')
 const filters = reactive({ scope: '', scene_type: '' })
 const showForm = ref(false)
 const editing = ref(null)
@@ -63,6 +64,7 @@ function apiError(error, fallback) {
 async function loadPrompts() {
   loading.value = true
   loadError.value = ''
+  refreshFeedback.value = ''
   try {
     prompts.value = await listPromptConfigs({
       ...(filters.scope && { scope: filters.scope }),
@@ -73,6 +75,18 @@ async function loadPrompts() {
   } finally {
     loading.value = false
   }
+}
+
+async function refreshPrompts() {
+  if (loading.value) return
+  await loadPrompts()
+  if (loadError.value) {
+    refreshFeedback.value = '刷新失败，请重试。'
+    ElMessage.error({ message: loadError.value, duration: 5000, showClose: true })
+    return
+  }
+  refreshFeedback.value = `刷新完成 · ${new Date().toLocaleTimeString('zh-CN', { hour12: false })} · 当前 ${prompts.value.length} 条配置`
+  ElMessage.success({ message: '提示词配置已刷新', duration: 3500, showClose: true })
 }
 
 function openCreate() {
@@ -201,11 +215,12 @@ onMounted(loadPrompts)
       </section>
 
       <section class="prompt-filters">
-        <label><span>作用层级</span><select v-model="filters.scope" @change="loadPrompts"><option value="">全部层级</option><option v-for="option in scopeOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
-        <label><span>业务场景</span><select v-model="filters.scene_type" @change="loadPrompts"><option value="">全部场景</option><option v-for="option in sceneOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
-        <button class="text-action" @click="loadPrompts">刷新配置</button>
+        <label><span>作用层级</span><select v-model="filters.scope" :disabled="loading" @change="loadPrompts"><option value="">全部层级</option><option v-for="option in scopeOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
+        <label><span>业务场景</span><select v-model="filters.scene_type" :disabled="loading" @change="loadPrompts"><option value="">全部场景</option><option v-for="option in sceneOptions" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></label>
+        <button class="text-action prompt-refresh" :disabled="loading" :aria-busy="loading" @click="refreshPrompts"><span v-if="loading" class="loading-ring" aria-hidden="true"></span>{{ loading ? '正在刷新…' : '刷新配置' }}</button>
       </section>
 
+      <p v-if="refreshFeedback" class="prompt-refresh-feedback" :class="{ 'is-error': loadError }" role="status" aria-live="polite">{{ refreshFeedback }}</p>
       <section class="model-panel">
         <div class="panel-heading"><div><h2>生效提示词</h2><p>优先级：即时指定 ＞ 场景级 ＞ 项目级 ＞ 全局默认。</p></div></div>
         <div v-if="loading" class="state-panel"><span class="loading-ring"></span><b>正在解析提示词层级</b><p>请稍候，平台正在读取当前生效版本。</p></div>

@@ -243,7 +243,8 @@ onMounted(async () => {
       </section>
     </div>
 
-    <div v-if="showForm" class="modal-backdrop" @click="showForm = false">
+    <Teleport to="body">
+    <div v-if="showForm" class="modal-backdrop" @click.self="showForm = false">
       <section class="config-modal" role="dialog" aria-modal="true" aria-labelledby="model-form-title" @click.stop>
         <header><div><small>{{ editingId ? 'EDIT MODEL' : 'NEW MODEL' }}</small><h2 id="model-form-title">{{ editingId ? '编辑模型配置' : '添加模型配置' }}</h2></div><button aria-label="关闭" @click="showForm = false">×</button></header>
         <div class="config-form">
@@ -267,5 +268,6 @@ onMounted(async () => {
     <div v-if="deleteTarget" class="modal-backdrop" @click.self="deleteTarget = null">
       <section class="confirm-modal" role="alertdialog" aria-modal="true"><span class="danger-mark">!</span><h2>删除模型配置？</h2><p>将删除“{{ deleteTarget.name }}”及其用量记录。依赖该模型的功能可能无法运行，此操作不可撤销。</p><div><button class="secondary-action" @click="deleteTarget = null">取消</button><button class="danger-action" @click="confirmDelete">确认删除</button></div></section>
     </div>
+    </Teleport>
   </WorkspaceShell>
 </template>

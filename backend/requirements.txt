@@ -10,3 +10,6 @@ langgraph==0.2.76
 psycopg2-binary==2.9.10
 pgvector==0.3.6
 redis==5.2.1
+
+pypdf==5.9.0
+python-docx==1.1.2
