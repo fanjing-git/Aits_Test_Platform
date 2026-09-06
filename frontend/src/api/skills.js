@@ -6,3 +6,4 @@ export const updateSkill = (id, payload) => request.patch(`/api/skills/${id}/`, 
 export const deleteSkill = (id) => request.delete(`/api/skills/${id}/`)
 export const toggleSkill = (id) => request.post(`/api/skills/${id}/toggle/`)
 export const executeSkill = (id, input) => request.post(`/api/skills/${id}/execute/`, { input })
+export const listPermissionAudits = (params = {}) => request.get('/api/skills/permission-audits/', { params })

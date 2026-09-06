@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from apps.skills.models import Skill
+from apps.skills.models import Skill, SkillPermissionAudit
 
 class SkillSerializer(serializers.ModelSerializer):
     """Serialize Skill definitions without runtime internals."""
@@ -19,3 +19,15 @@ class SkillSerializer(serializers.ModelSerializer):
         if project is not None and not (getattr(request.user.profile, 'role', None) == 'admin' or project.memberships.filter(user=request.user).values('role').exists()): raise serializers.ValidationError({'project':'项目不存在或不可访问。'})
         return attrs
     def create(self, validated_data): return Skill.objects.create(created_by=self.context['request'].user, **validated_data)
+
+
+class SkillPermissionAuditSerializer(serializers.ModelSerializer):
+    """Expose safe permission decisions without request values."""
+
+    installation_source = serializers.CharField(source="installation.source_url", read_only=True)
+    actor_username = serializers.CharField(source="actor.username", read_only=True, allow_null=True)
+
+    class Meta:
+        model = SkillPermissionAudit
+        fields = ("id", "installation", "installation_source", "permission", "allowed", "reason", "context_keys", "actor", "actor_username", "created_at")
+        read_only_fields = fields

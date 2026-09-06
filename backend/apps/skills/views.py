@@ -3,9 +3,9 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.db.models import Q
 from apps.projects.permissions import is_platform_admin, project_role
-from apps.skills.models import Skill
-from apps.skills.permissions import SkillPermission
-from apps.skills.serializers import SkillSerializer
+from apps.skills.models import Skill, SkillPermissionAudit
+from apps.skills.permissions import SkillAuditPermission, SkillPermission
+from apps.skills.serializers import SkillPermissionAuditSerializer, SkillSerializer
 from apps.skills.runtime import execute_skill, SkillRuntimeError
 
 class SkillViewSet(viewsets.ModelViewSet):
@@ -36,3 +36,18 @@ class SkillViewSet(viewsets.ModelViewSet):
         except SkillRuntimeError as exc:
             return Response({'detail': str(exc), 'status': 'failed'}, status=400)
         return Response({'status': 'completed', 'result': result})
+
+
+class SkillPermissionAuditViewSet(viewsets.ReadOnlyModelViewSet):
+    """Read-only administrator view of permission decisions."""
+
+    serializer_class = SkillPermissionAuditSerializer
+    permission_classes = (SkillAuditPermission,)
+
+    def get_queryset(self):
+        """Return newest audit decisions with safe related labels."""
+        queryset = SkillPermissionAudit.objects.select_related("installation", "actor")
+        installation_id = self.request.query_params.get("installation")
+        if installation_id:
+            queryset = queryset.filter(installation_id=installation_id)
+        return queryset

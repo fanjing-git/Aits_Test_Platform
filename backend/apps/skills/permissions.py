@@ -75,3 +75,11 @@ class SkillPermission(BasePermission):
         """Restrict writes to platform admins or project managers."""
         if request.method in ('GET', 'HEAD', 'OPTIONS'): return is_platform_admin(request.user) or obj.project_id is None or project_role(request.user, obj.project) is not None
         return is_platform_admin(request.user) or (obj.project_id is not None and project_role(request.user, obj.project) in {'owner', 'manager'})
+
+
+class SkillAuditPermission(BasePermission):
+    """Allow only platform administrators to inspect permission audit entries."""
+
+    def has_permission(self, request, view) -> bool:
+        """Require authentication and the platform administrator role."""
+        return bool(request.user and request.user.is_authenticated and is_platform_admin(request.user))

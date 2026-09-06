@@ -51,6 +51,7 @@ const router = createRouter({
     { path: '/workspace/environments', name: 'environments', component: () => import('../views/EnvironmentView.vue'), meta: { requiresAuth: true } },
     { path: '/workspace/knowledge', name: 'knowledge', component: () => import('../views/KnowledgeView.vue'), meta: { requiresAuth: true } },
     { path: '/workspace/skills', name: 'skills', component: () => import('../views/SkillsView.vue'), meta: { requiresAuth: true } },
+    { path: '/workspace/skill-audits', name: 'skill-audits', component: () => import('../views/SkillAuditView.vue'), meta: { requiresAuth: true, roles: ['admin'] } },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })
