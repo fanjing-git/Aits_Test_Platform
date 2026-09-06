@@ -128,7 +128,15 @@ def _parse_image(content: bytes) -> tuple[str, list[dict[str, Any]], float, list
         with Image.open(io.BytesIO(content)) as image:
             image = image.convert("RGB")
             image = image.resize((max(image.width, 1600), max(image.height, 900)))
-            available = set(pytesseract.get_languages(config=""))
+            tessdata = os.environ.get("TESSDATA_PREFIX", "").strip()
+            if not tessdata:
+                project_tessdata = Path(__file__).resolve().parents[2] / ".runtime" / "tessdata"
+                if (project_tessdata / "chi_sim.traineddata").is_file():
+                    tessdata = str(project_tessdata)
+            if tessdata:
+                os.environ["TESSDATA_PREFIX"] = tessdata
+            tess_config = "--psm 11"
+            available = set(pytesseract.get_languages(config=tess_config))
             requested = os.environ.get("TESSERACT_LANG", "chi_sim+eng")
             languages = "+".join(item for item in requested.split("+") if item in available)
             warnings: list[str] = []
@@ -137,7 +145,7 @@ def _parse_image(content: bytes) -> tuple[str, list[dict[str, Any]], float, list
                 return "", [], 0.0, warnings
             if not languages:
                 raise DocumentParseError("OCR 语言包不可用，请安装并配置 Tesseract 语言数据。")
-            data = pytesseract.image_to_data(image, lang=languages, output_type=pytesseract.Output.DICT)
+            data = pytesseract.image_to_data(image, lang=languages, config=tess_config, output_type=pytesseract.Output.DICT)
             words: list[str] = []
             evidence: list[dict[str, Any]] = []
             confidences: list[float] = []
