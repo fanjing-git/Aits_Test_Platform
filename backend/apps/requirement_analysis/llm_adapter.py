@@ -91,10 +91,15 @@ class RequirementModelAdapter:
     def analyze(self, *, text: str, evidence: Sequence[Mapping[str, Any]], project_name: str | None = None, task_type: str = "requirement_analysis", scene_type: str = PromptConfig.SceneType.REQUIREMENT_ANALYSIS) -> dict[str, Any]:
         """Return validated model output or raise a safe, retryable error."""
         evidence_ids = {str(item.get("id")) for item in evidence if item.get("id")}
+        return self.run(text=text, evidence=evidence, project_name=project_name, task_type=task_type, scene_type=scene_type, validator=lambda payload: _validate_payload(payload, evidence_ids))
+
+    def run(self, *, text: str, evidence: Sequence[Mapping[str, Any]], project_name: str | None = None, task_type: str = "requirement_analysis", scene_type: str = PromptConfig.SceneType.REQUIREMENT_ANALYSIS, validator: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None) -> dict[str, Any]:
+        """Execute a structured runtime and apply a caller-provided validator."""
+        evidence_ids = {str(item.get("id")) for item in evidence if item.get("id")}
         resolved = self.prompt_manager.resolve(scene_type, project_name=project_name, instant_prompt="只输出 JSON；每个功能和测试点必须引用可验证 evidence_ids；无法确认的内容放入 needs_confirmation。")
         def operation(runtime: StructuredRuntime, _config: ModelConfig) -> dict[str, Any]:
             payload = runtime.generate_structured(prompt=resolved.content, text=text, evidence=evidence)
-            return _validate_payload(payload, evidence_ids)
+            return validator(payload) if validator else dict(payload)
         try:
             return self.model_manager.execute_with_fallback(task_type, operation, retry_on=(Exception,))
         except (ModelNotFound, ModelFallbackExhausted) as exc:
