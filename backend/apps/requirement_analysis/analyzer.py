@@ -78,7 +78,26 @@ def _relationship(source: str, target: str) -> str:
     return "sequence"
 
 
-def deep_analyze(text: str, *, title: str = "需求文档") -> DeepAnalysis:
+def _function_test_points(function: dict[str, Any], start: int) -> list[dict[str, Any]]:
+    """Build a broad but explainable baseline around one function."""
+    name = function["name"]
+    function_id = function["id"]
+    cases = [
+        ("positive", "正常流程", "验证功能按需求完成并给出可确认结果"),
+        ("negative", "输入校验", "验证缺少必填项、格式错误或非法值时给出明确提示"),
+        ("negative", "权限拒绝", "验证未授权角色无法执行该功能且不泄露受限数据"),
+        ("negative", "依赖失败", "验证依赖服务超时或返回错误时能安全失败并保留可重试状态"),
+        ("boundary", "边界值", "验证最小值、最大值、空集合和超长输入均有明确处理"),
+        ("boundary", "重复提交", "验证连续点击、刷新或重复请求不会造成重复数据或重复扣减"),
+        ("boundary", "状态恢复", "验证中断、网络恢复和重新进入页面后状态与结果保持一致"),
+    ]
+    return [
+        {"id": f"test-point-{start + index}", "function_id": function_id, "type": kind, "scenario": scenario, "description": f"{description}：{name}"}
+        for index, (kind, scenario, description) in enumerate(cases)
+    ]
+
+
+def deep_analyze(text: str, *, title: str = "需求文档", source_type: str = "manual") -> DeepAnalysis:
     """Decompose requirement text into modules, functions, flows and test points.
 
     The implementation is intentionally deterministic and explainable. It does not
@@ -112,12 +131,22 @@ def deep_analyze(text: str, *, title: str = "需求文档") -> DeepAnalysis:
         data_items = sorted(set(_DATA_TERMS.findall(function["description"])))
         if data_items and index + 1 < len(functions):
             data_flows.append({"data": data_items, "from": function["id"], "to": functions[index + 1]["id"], "direction": "forward"})
-    test_points = [{"id": f"test-point-{index}", "function_id": function["id"], "type": kind, "description": f"验证{function['name']}的{label}"} for index, (function, kind, label) in enumerate(((item, "positive", "正常流程") for item in functions), start=1)]
+    test_points: list[dict[str, Any]] = []
     for function in functions:
-        test_points.extend([
-            {"id": f"test-point-{len(test_points) + 1}", "function_id": function["id"], "type": "negative", "description": f"验证{function['name']}的异常输入和权限拒绝"},
-            {"id": f"test-point-{len(test_points) + 2}", "function_id": function["id"], "type": "boundary", "description": f"验证{function['name']}的边界值和重复提交"},
-        ])
+        test_points.extend(_function_test_points(function, len(test_points) + 1))
+    if source_type == RequirementDocument.SourceType.SCREENSHOT:
+        visual_module_id = "module-visual-baseline"
+        modules.append({"id": visual_module_id, "name": "截图界面行为基线", "summary": "基于截图可观察行为建立待人工确认的视觉测试基线", "actors": actors})
+        visual_functions = (
+            ("页面元素可见性", "验证关键文字、图标、按钮和交互区域在加载完成后可见且状态清晰"),
+            ("界面导航与切换", "验证菜单、标签页和返回操作不会丢失当前上下文"),
+            ("列表与网格状态", "验证列表或网格的加载、空数据、分页和溢出状态可理解"),
+            ("操作反馈与错误提示", "验证点击、处理中、成功、失败和重试反馈及时且不会误导用户"),
+        )
+        for index, (name, description) in enumerate(visual_functions, start=1):
+            function = {"id": f"{visual_module_id}-function-{index}", "module_id": visual_module_id, "name": name, "description": description, "actors": actors, "acceptance_criteria": [description]}
+            functions.append(function)
+            test_points.extend(_function_test_points(function, len(test_points) + 1))
     coverage = {
         "title": title,
         "module_count": len(modules),
@@ -129,6 +158,9 @@ def deep_analyze(text: str, *, title: str = "需求文档") -> DeepAnalysis:
         "data_flows": data_flows,
         "completeness": round(min(1.0, len(test_points) / max(1, len(functions) * 3)), 4),
     }
+    if source_type == RequirementDocument.SourceType.SCREENSHOT:
+        coverage["visual_baseline"] = True
+        coverage["visual_baseline_note"] = "截图 OCR 结果需人工确认；以上视觉基线不代表已识别出全部业务功能。"
     return DeepAnalysis(modules, functions, linkages, test_points, coverage)
 
 
@@ -140,7 +172,7 @@ def analyze_requirement_document(document: RequirementDocument) -> RequirementAn
     document.status = RequirementDocument.Status.ANALYZING
     document.save(update_fields=("status",))
     try:
-        result = deep_analyze(document.content_text, title=document.title)
+        result = deep_analyze(document.content_text, title=document.title, source_type=document.source_type)
         analysis = RequirementAnalysis.objects.create(document=document, **result.as_dict())
         document.status = RequirementDocument.Status.ANALYZED
         document.save(update_fields=("status",))

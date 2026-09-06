@@ -28,6 +28,19 @@ class RequirementDeepAnalysisTests(TestCase):
         with self.assertRaises(RequirementAnalysisError):
             deep_analyze(" ")
 
+    def test_each_function_gets_forward_reverse_and_boundary_baseline(self) -> None:
+        result = deep_analyze("# 登录\n用户提交账号和密码。")
+        self.assertEqual(len(result.functions), 1)
+        self.assertEqual(len(result.test_points), 7)
+        self.assertEqual({item["scenario"] for item in result.test_points}, {"正常流程", "输入校验", "权限拒绝", "依赖失败", "边界值", "重复提交", "状态恢复"})
+
+    def test_screenshot_analysis_adds_honest_visual_baseline(self) -> None:
+        result = deep_analyze("OCR text", title="背包截图", source_type=RequirementDocument.SourceType.SCREENSHOT)
+        self.assertTrue(result.coverage_report["visual_baseline"])
+        self.assertEqual(len(result.functions), 5)
+        self.assertEqual(len(result.test_points), 35)
+        self.assertIn("需人工确认", result.coverage_report["visual_baseline_note"])
+
     def test_document_analysis_is_persisted_and_repeated_runs_keep_history(self) -> None:
         user = get_user_model().objects.create_user(username="deep-analysis-owner")
         project = Project.objects.create(name="Deep analysis project", created_by=user)
