@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
+import shutil
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -97,6 +99,26 @@ def _parse_swagger(content: bytes) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)
 
 
+def _parse_image(content: bytes) -> str:
+    """Run optional local OCR without allowing an unconfigured binary to leak errors."""
+    try:
+        from PIL import Image
+        import pytesseract
+        command = os.environ.get("TESSERACT_CMD") or shutil.which("tesseract")
+        if not command:
+            candidate = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Tesseract-OCR" / "tesseract.exe"
+            if candidate.is_file():
+                command = str(candidate)
+        if command:
+            pytesseract.pytesseract.tesseract_cmd = command
+        with Image.open(io.BytesIO(content)) as image:
+            return _normalize(pytesseract.image_to_string(image))
+    except ImportError as exc:
+        raise DocumentParseError("图片 OCR 依赖未安装，暂时无法解析图片。") from exc
+    except Exception as exc:  # noqa: BLE001 - sanitize PIL/Tesseract failures
+        raise DocumentParseError("图片 OCR 解析失败，请检查图片和 OCR 引擎。") from exc
+
+
 def parse_document_bytes(content: bytes | bytearray, filename: str, *, source_url: str = "") -> ParsedDocument:
     """Parse an uploaded document by extension within the size and type boundary."""
     data = _bounded(bytes(content))
@@ -118,13 +140,7 @@ def parse_document_bytes(content: bytes | bytearray, filename: str, *, source_ur
         elif suffix == ".json":
             text = _parse_swagger(data); fmt = "swagger"
         else:
-            try:
-                from PIL import Image
-                import pytesseract
-                with Image.open(io.BytesIO(data)) as image:
-                    text = _normalize(pytesseract.image_to_string(image))
-            except ImportError as exc:
-                raise DocumentParseError("图片 OCR 依赖未安装，暂时无法解析图片。") from exc
+            text = _parse_image(data)
             fmt = "ocr"
     except DocumentParseError:
         raise

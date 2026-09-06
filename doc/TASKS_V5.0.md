@@ -366,7 +366,7 @@ T131完成记录：新增管理员第三方Skill安装生命周期REST API及工
 T131验收补漏记录：工作台补充本地 Skill 文件选择与导入入口，自动计算文件哈希并调用受控校验接口，补齐“下载文件后导入”操作路径。专项测试3/3、前端生产构建通过。
 
 T132完成记录：新增安装后受控运行时绑定与 `invoke` API，调用前强制执行声明权限守卫，权限决策写入审计；本地、GitHub、SkillHub 模拟来源均完成发现→校验→审批→安装→调用→回滚撤销验证。专项测试2/2、后端全量225/225、迁移检查、Django check和前端生产构建通过。下一任务恢复T042。
-T042完成记录：新增统一需求文档解析器，支持PDF、Word、XLSX、Markdown、Swagger/OpenAPI、在线文档和图片OCR依赖探测；统一执行10MB限制、文本规范化、解析异常安全失败，并可推进RequirementDocument到分析状态。专项测试5/5、后端全量230/230、迁移检查、Django check和前端生产构建通过。下一任务为T043。
+T042完成记录：新增统一需求文档解析器，支持PDF、Word、XLSX、Markdown、Swagger/OpenAPI、在线文档和图片OCR；统一执行10MB限制、文本规范化、解析异常安全失败，并可推进RequirementDocument到分析状态。补充Pillow、pytesseract和Windows Tesseract OCR 5.5.3，真实PNG文字识别通过。专项测试5/5、后端全量230/230、迁移检查、Django check和前端生产构建通过。下一任务为T043。
 
 
 

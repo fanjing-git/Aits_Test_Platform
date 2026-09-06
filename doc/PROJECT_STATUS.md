@@ -79,7 +79,7 @@
 - 2026-09-06：完成T131。新增管理员安装生命周期 API `/api/skills/installations/` 及 verify/approve/install/rollback/uninstall 动作，复用来源清单、版本和哈希校验服务；新增工作台 `Skill installations` 页面，支持来源添加、权限查看、受控校验、审批、安装、回滚、卸载和加载/空数据/字段错误/401/403/服务失败反馈。专项测试3/3、后端全量223/223、Django check、迁移一致性检查和前端生产构建通过；本地前后端服务保持HTTP 200。下一任务T132。
 - 2026-09-06：T131验收补漏。工作台新增本地 Skill 文件选择器，限制50MB，浏览器计算SHA-256并将文件转为受控校验载荷，导入请求后自动完成完整性校验，再进入管理员审批；不下载或执行第三方代码。后端专项3/3、前端生产构建通过。
 - 2026-09-06：完成T132。安装审批后自动绑定受控 Skill 运行时，新增 `invoke` API 和工作台 Invoke 操作；调用必须声明权限并经过 T130 守卫，允许与拒绝均写入审计，回滚/卸载后调用安全失败。专项测试2/2（含本地、GitHub、SkillHub 模拟发现及安装→调用→撤销）、后端全量225/225、Django check、迁移一致性检查和前端生产构建通过；本地前后端服务保持HTTP 200。Skills扩展阶段完成，下一任务恢复T042。
-- 2026-09-06：完成T042。新增需求文档解析器，统一支持PDF、Word、Excel、Markdown、Swagger/OpenAPI、在线文档和图片OCR安全失败边界；实现10MB大小限制、UTF-8规范化、XLSX XML单元格提取、在线适配器复用及RequirementDocument解析状态推进。专项测试5/5、后端全量230/230、Django check、迁移一致性检查和前端生产构建通过；图片OCR在依赖未安装时明确失败并保留安全边界。下一任务T043。
+- 2026-09-06：完成T042。新增需求文档解析器，统一支持PDF、Word、Excel、Markdown、Swagger/OpenAPI、在线文档和图片OCR安全失败边界；实现10MB大小限制、UTF-8规范化、XLSX XML单元格提取、在线适配器复用及RequirementDocument解析状态推进。补充Python依赖`Pillow==11.3.0`、`pytesseract==0.3.13`及本机Tesseract 5.5.3，真实PNG文字识别通过。专项测试5/5、后端全量230/230、Django check、迁移一致性检查和前端生产构建通过。下一任务T043。
 
 ### 当前遗留问题与处理顺序
 
@@ -295,6 +295,7 @@
 - 环境模型（T019）：Environment按project+name唯一，name为dev/test/staging/prod；默认unavailable/unknown，维护状态与健康状态独立。database_config/auth_config/variables使用EncryptedObjectField，对Python提供字典、数据库JSON列存Fernet密文字符串；复用MODEL_CONFIG_FERNET_KEY，无新依赖，禁止对加密配置使用JSON键查询，需读取环境后访问。Admin仅管理元数据，不回显配置凭据。T020已实现API，产品页面T096已完成待验收。
 
 - Python：项目根目录 `.venv`
+- OCR：Python Pillow 11.3.0 + pytesseract 0.3.13；Windows Tesseract OCR 5.5.3，本地解析器通过 `TESSERACT_CMD` 或默认安装路径发现引擎
 - Django settings：`config.settings.dev`
 - 本地数据库：SQLite
 - Celery：memory broker + eager 模式
