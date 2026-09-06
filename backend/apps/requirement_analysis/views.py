@@ -13,6 +13,7 @@ from apps.requirement_analysis.models import RequirementAnalysis, RequirementDoc
 from apps.requirement_analysis.parser import DocumentParseError, parse_requirement_document
 from apps.requirement_analysis.permissions import RequirementPermission, can_manage_requirements
 from apps.requirement_analysis.serializers import RequirementAnalysisSerializer, RequirementDocumentSerializer
+from apps.requirement_analysis.screenshot_analyzer import analyze_screenshot_file
 
 
 class RequirementDocumentViewSet(viewsets.ModelViewSet):
@@ -93,6 +94,21 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
         except LinkageAnalysisError as exc:
             raise ValidationError({"detail": str(exc)}) from exc
         return Response(RequirementAnalysisSerializer(updated).data)
+
+    @action(detail=True, methods=("post",), url_path="screenshot-analysis")
+    def screenshot_analysis(self, request, pk=None):
+        """Return evidence-grounded screenshot observations for screenshot sources."""
+        document = self.get_object()
+        self._require_manager(document)
+        if document.source_type != RequirementDocument.SourceType.SCREENSHOT:
+            raise ValidationError({"detail": "只有截图来源支持截图识别分析。"})
+        if not document.file_path:
+            raise ValidationError({"detail": "截图文件不存在，请重新导入图片。"})
+        try:
+            report = analyze_screenshot_file(document.file_path).as_dict()
+        except DocumentParseError as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
+        return Response(report)
 
 
 class RequirementAnalysisViewSet(viewsets.ReadOnlyModelViewSet):

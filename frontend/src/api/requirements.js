@@ -6,3 +6,4 @@ export const deleteRequirementDocument = (id) => request.delete(`/api/requiremen
 export const parseRequirementDocument = (id) => request.post(`/api/requirement-documents/${id}/parse/`)
 export const analyzeRequirementDocument = (id) => request.post(`/api/requirement-documents/${id}/analyze/`)
 export const identifyRequirementLinkages = (id) => request.post(`/api/requirement-documents/${id}/linkages/`)
+export const analyzeRequirementScreenshot = (id) => request.post(`/api/requirement-documents/${id}/screenshot-analysis/`)

@@ -82,3 +82,9 @@ class RequirementAnalysisApiTests(TestCase):
 
     def test_anonymous_requests_are_unauthorized(self) -> None:
         self.assertEqual(self.client.get(self.url).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_screenshot_analysis_rejects_non_screenshot_source(self) -> None:
+        document = RequirementDocument.objects.create(project=self.project, title="Manual", content_text="内容", created_by=self.owner)
+        self.client.force_authenticate(self.owner)
+        response = self.client.post(f"{self.url}{document.pk}/screenshot-analysis/")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

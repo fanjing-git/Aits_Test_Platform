@@ -5,6 +5,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-chi-sim \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./
 COPY wheelhouse /wheelhouse
 RUN pip install --no-cache-dir --disable-pip-version-check \
