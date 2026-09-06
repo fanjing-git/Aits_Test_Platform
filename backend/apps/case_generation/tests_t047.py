@@ -1,13 +1,51 @@
 """Focused tests for five-round generated case review."""
+from types import SimpleNamespace
+from unittest.mock import Mock
+
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
 from apps.case_generation.generator import generate_document_cases
+from apps.case_generation.llm_adapter import CaseReviewModelAdapter
 from apps.case_generation.models import CaseGenerationRecord
 from apps.case_generation.reviewer import CaseReviewError, review_cases, review_generation_record
+from apps.requirement_analysis.llm_adapter import ModelAnalysisError
 from apps.projects.models import Project
 from apps.requirement_analysis.analyzer import analyze_requirement_document
 from apps.requirement_analysis.models import RequirementDocument
+
+
+class CaseReviewModelAdapterTests(SimpleTestCase):
+    """Verify structured review output is scoped to known cases."""
+
+    def test_structured_review_is_validated(self) -> None:
+        runtime = Mock()
+        runtime.generate_structured.return_value = {
+            "issues": [{"id": "issue-1", "case_id": "case-1", "severity": "medium", "description": "缺少边界步骤", "suggestion": "补充最大值场景", "evidence_ids": []}],
+            "corrections": [{"case_id": "case-1", "field": "steps", "value": ["执行边界值"]}],
+            "approved": False,
+            "summary": "需要补充边界覆盖",
+        }
+        manager = Mock()
+        manager.execute_with_fallback.side_effect = lambda _task, operation, **_kwargs: operation(runtime, SimpleNamespace(name="fake"))
+        prompts = Mock(); prompts.resolve.return_value = SimpleNamespace(content="JSON")
+        record = SimpleNamespace(
+            cases=[{"id": "case-1", "title": "登录", "steps": ["执行登录"], "expected_result": "成功"}],
+            document=SimpleNamespace(content_text="用户登录", parse_evidence=[]),
+            project=SimpleNamespace(name="项目"),
+        )
+        result = CaseReviewModelAdapter(model_manager=manager, prompt_manager=prompts).review(record=record)
+        self.assertFalse(result["approved"])
+        self.assertEqual(result["issues"][0]["case_id"], "case-1")
+
+    def test_unknown_case_reference_is_rejected(self) -> None:
+        runtime = Mock()
+        runtime.generate_structured.return_value = {"issues": [{"case_id": "unknown", "severity": "high", "description": "问题", "suggestion": "修正", "evidence_ids": []}], "corrections": [], "approved": False}
+        manager = Mock(); manager.execute_with_fallback.side_effect = lambda _task, operation, **_kwargs: operation(runtime, SimpleNamespace(name="fake"))
+        prompts = Mock(); prompts.resolve.return_value = SimpleNamespace(content="JSON")
+        record = SimpleNamespace(cases=[{"id": "case-1"}], document=SimpleNamespace(content_text="需求", parse_evidence=[]), project=SimpleNamespace(name="项目"))
+        with self.assertRaises(ModelAnalysisError):
+            CaseReviewModelAdapter(model_manager=manager, prompt_manager=prompts).review(record=record)
 
 
 class CaseReviewTests(TestCase):
@@ -36,3 +74,10 @@ class CaseReviewTests(TestCase):
         with self.assertRaises(CaseReviewError): review_generation_record(self.record)
         self.record.refresh_from_db()
         self.assertEqual(self.record.status, CaseGenerationRecord.Status.FAILED)
+
+    def test_model_review_is_merged_into_final_report(self) -> None:
+        fake = Mock()
+        fake.review.return_value = {"issues": [{"id": "model-issue-1", "code": "coverage", "case_id": self.record.cases[0]["id"], "severity": "low", "dimension": "coverage", "description": "建议增加说明", "suggestion": "补充步骤", "evidence_ids": [], "source": "model"}], "corrections": [], "approved": True, "summary": "基本可执行"}
+        result = review_cases(self.record, model_adapter=fake)
+        self.assertEqual(result.report["analysis_method"], "model_verified")
+        self.assertTrue(any(item.get("source") == "model" for item in result.issues))

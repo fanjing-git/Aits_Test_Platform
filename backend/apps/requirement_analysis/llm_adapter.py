@@ -74,7 +74,7 @@ class OpenAICompatibleRuntime:
             max_tokens = 2048
         body = {
             "model": self.config.model_name,
-            "temperature": parameters.get("temperature", 0),
+            "temperature": parameters.get("structured_temperature", 0),
             "max_tokens": max_tokens,
             "response_format": {"type": "json_object"},
             "messages": [
@@ -128,21 +128,23 @@ class RequirementModelAdapter:
         evidence_ids = {str(item.get("id")) for item in evidence if item.get("id")}
         return self.run(text=text, evidence=evidence, project_name=project_name, task_type=task_type, scene_type=scene_type, validator=lambda payload: _validate_payload(payload, evidence_ids, evidence))
 
-    def run(self, *, text: str, evidence: Sequence[Mapping[str, Any]], project_name: str | None = None, task_type: str = "requirement_analysis", scene_type: str = PromptConfig.SceneType.REQUIREMENT_ANALYSIS, validator: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None) -> dict[str, Any]:
+    def run(self, *, text: str, evidence: Sequence[Mapping[str, Any]], project_name: str | None = None, task_type: str = "requirement_analysis", scene_type: str = PromptConfig.SceneType.REQUIREMENT_ANALYSIS, validator: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None, instant_prompt: str | None = None, prompt_override: str | None = None) -> dict[str, Any]:
         """Execute a structured runtime and apply a caller-provided validator."""
         evidence_ids = {str(item.get("id")) for item in evidence if item.get("id")}
+        instruction = instant_prompt or (
+            "只输出 JSON；每个功能和测试点必须引用可验证 evidence_ids；无法确认的内容放入 needs_confirmation。 "
+            "Output ONLY a JSON object with top-level keys modules, functions, linkages, test_points, coverage_report. "
+            "The first four keys MUST be arrays of objects; every item MUST have a unique string id. "
+            "Use only evidence_ids present in the input, do not echo the input text/evidence, and do not use Markdown."
+        )
         resolved = self.prompt_manager.resolve(
             scene_type,
             project_name=project_name,
-            instant_prompt=(
-                "只输出 JSON；每个功能和测试点必须引用可验证 evidence_ids；无法确认的内容放入 needs_confirmation。 "
-                "Output ONLY a JSON object with top-level keys modules, functions, linkages, test_points, coverage_report. "
-                "The first four keys MUST be arrays of objects; every item MUST have a unique string id. "
-                "Use only evidence_ids present in the input, do not echo the input text/evidence, and do not use Markdown."
-            ),
+            instant_prompt=instruction,
         )
+        prompt_content = prompt_override.strip() if isinstance(prompt_override, str) and prompt_override.strip() else resolved.content
         def operation(runtime: StructuredRuntime, _config: ModelConfig) -> dict[str, Any]:
-            payload = runtime.generate_structured(prompt=resolved.content, text=text, evidence=evidence)
+            payload = runtime.generate_structured(prompt=prompt_content, text=text, evidence=evidence)
             return validator(payload) if validator else dict(payload)
         try:
             return self.model_manager.execute_with_fallback(task_type, operation, retry_on=(Exception,))

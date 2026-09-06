@@ -4,7 +4,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from apps.configs.models import ModelConfig
 from apps.case_generation.models import CaseGenerationRecord
+from apps.case_generation.llm_adapter import CaseReviewModelAdapter
+from apps.requirement_analysis.llm_adapter import ModelAnalysisError
 
 
 class CaseReviewError(ValueError):
@@ -21,13 +24,20 @@ class ReviewResult:
     report: dict[str, Any]
 
 
-def review_cases(record: CaseGenerationRecord) -> ReviewResult:
+def review_cases(record: CaseGenerationRecord, *, model_adapter: CaseReviewModelAdapter | None = None) -> ReviewResult:
     """Review cases for completeness, requirement coverage, consistency and risk."""
     if not isinstance(record.cases, list) or not record.cases:
         raise CaseReviewError("生成记录没有可评审的用例。")
     cases = [item for item in record.cases if isinstance(item, dict)]
     issues: list[dict[str, Any]] = []
     trace: list[dict[str, Any]] = []
+    model_result: dict[str, Any] | None = None
+    model_warning = ""
+    if model_adapter:
+        try:
+            model_result = model_adapter.review(record=record, project_name=record.project.name)
+        except ModelAnalysisError as exc:
+            model_warning = str(exc)
     # Round 1: required field and duplicate checks.
     seen: set[str] = set()
     for item in cases:
@@ -48,6 +58,14 @@ def review_cases(record: CaseGenerationRecord) -> ReviewResult:
         if missing:
             issues.append({"code": "coverage_gap", "function_id": function_id, "missing_types": sorted(missing), "severity": "medium"})
     trace.append({"round": 2, "stage": "requirement_compare", "issues": len(issues)})
+    if model_result:
+        issues.extend(model_result["issues"])
+        trace[0]["model"] = "verified"
+        trace[0]["model_issues"] = len(model_result["issues"])
+        trace[2 - 1]["model_corrections"] = len(model_result["corrections"])
+    elif model_warning:
+        trace[0]["model"] = "fallback"
+        trace[0]["model_warning"] = model_warning
     # Round 3: correct low-risk formatting deviations in place.
     corrected = 0
     for item in cases:
@@ -61,17 +79,24 @@ def review_cases(record: CaseGenerationRecord) -> ReviewResult:
     remaining = [item for item in issues if item.get("severity") == "high"]
     trace.append({"round": 4, "stage": "re_review", "issues": len(remaining)})
     approved = not remaining and not any(item.get("severity") == "medium" for item in issues)
-    report = {"approved": approved, "case_count": len(cases), "issue_count": len(issues), "high_issue_count": sum(item.get("severity") == "high" for item in issues), "medium_issue_count": sum(item.get("severity") == "medium" for item in issues), "round_trace": trace}
+    report = {"approved": approved, "case_count": len(cases), "issue_count": len(issues), "high_issue_count": sum(item.get("severity") == "high" for item in issues), "medium_issue_count": sum(item.get("severity") == "medium" for item in issues), "round_trace": trace, "analysis_method": "model_verified" if model_result else "deterministic_baseline"}
+    if model_result:
+        report["model_summary"] = model_result.get("summary", "")
+        report["model_corrections"] = model_result["corrections"]
+    if model_warning:
+        report["model_warning"] = model_warning
     trace.append({"round": 5, "stage": "final_review_report", "approved": approved, "issues": len(issues)})
     return ReviewResult(approved, issues, trace, report)
 
 
-def review_generation_record(record: CaseGenerationRecord) -> CaseGenerationRecord:
+def review_generation_record(record: CaseGenerationRecord, *, model_adapter: CaseReviewModelAdapter | None = None) -> CaseGenerationRecord:
     """Persist a five-round review report while retaining generated cases."""
     record.status = CaseGenerationRecord.Status.REVIEWING
     record.save(update_fields=("status",))
     try:
-        result = review_cases(record)
+        if model_adapter is None and ModelConfig.objects.filter(is_active=True, model_type=ModelConfig.ModelType.CHAT).exists():
+            model_adapter = CaseReviewModelAdapter()
+        result = review_cases(record, model_adapter=model_adapter)
         record.review_rounds = 5
         record.review_report = {**result.report, "issues": result.issues, "round_trace": result.round_trace}
         record.status = CaseGenerationRecord.Status.COMPLETED
