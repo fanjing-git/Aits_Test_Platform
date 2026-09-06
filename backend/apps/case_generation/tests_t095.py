@@ -65,6 +65,26 @@ class CaseGenerationApiTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         issue = response.data["review_report"]["issues"][0]
         self.assertEqual(issue["description"], "测试步骤过于笼统，缺少具体操作和测试数据。")
+        self.assertEqual(issue["severity_label"], "中")
+        self.assertTrue(issue["id"])
+
+    def test_review_issue_ids_are_stable_when_legacy_records_are_missing_or_duplicated(self) -> None:
+        record = CaseGenerationRecord.objects.create(
+            project=self.project,
+            document=self.document,
+            cases=[{"id": "case-001", "title": "登录", "type": "positive", "steps": ["执行"], "expected_result": "成功"}],
+            review_rounds=5,
+            review_report={"approved": False, "issues": [
+                {"id": "same", "severity": "high", "description": "问题一", "suggestion": "建议一"},
+                {"id": "same", "severity": "low", "description": "问题二", "suggestion": "建议二"},
+                {"severity": "medium", "description": "问题三", "suggestion": "建议三"},
+            ]},
+        )
+        self.client.force_authenticate(self.owner)
+        response = self.client.get(f"{self.url}{record.id}/")
+        ids = [item["id"] for item in response.data["review_report"]["issues"]]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual([item["severity_label"] for item in response.data["review_report"]["issues"]], ["高", "低", "中"])
 
     def test_viewer_reads_but_cannot_mutate_and_outsider_is_hidden(self) -> None:
         self.client.force_authenticate(self.owner)

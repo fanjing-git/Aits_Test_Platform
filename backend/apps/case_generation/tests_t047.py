@@ -39,6 +39,7 @@ class CaseReviewModelAdapterTests(SimpleTestCase):
         self.assertEqual(result["issues"][0]["case_id"], "case-1")
         self.assertEqual(result["issues"][0]["description"], "测试步骤过于笼统，缺少具体操作和测试数据。")
         self.assertEqual(result["issues"][0]["suggestion"], "请根据需求补充可执行的操作、输入和预期结果。")
+        self.assertEqual(result["issues"][0]["severity_label"], "中")
         self.assertIn("Test case steps", result["issues"][0]["model_description"])
         self.assertEqual(_localize_review_text("Unexpected model output"), "请结合需求证据核对模型指出的问题。")
 

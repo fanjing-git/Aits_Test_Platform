@@ -3,7 +3,7 @@
 from rest_framework import serializers
 
 from apps.case_generation.models import CaseGenerationRecord
-from apps.case_generation.llm_adapter import _localize_review_text
+from apps.case_generation.llm_adapter import REVIEW_SEVERITY_LABELS, _localize_review_text
 from apps.requirement_analysis.models import RequirementDocument
 
 
@@ -34,7 +34,8 @@ class CaseGenerationRecordSerializer(serializers.ModelSerializer):
         if not isinstance(issues, list):
             return report
         normalized: list[dict] = []
-        for raw in issues:
+        seen_ids: set[str] = set()
+        for index, raw in enumerate(issues, start=1):
             if not isinstance(raw, dict):
                 continue
             issue = dict(raw)
@@ -46,6 +47,14 @@ class CaseGenerationRecordSerializer(serializers.ModelSerializer):
                 issue["model_suggestion"] = suggestion
             issue["description"] = _localize_review_text(description)
             issue["suggestion"] = _localize_review_text(suggestion, suggestion=True)
+            severity = str(issue.get("severity", "medium")).strip().lower()
+            issue["severity"] = severity
+            issue["severity_label"] = REVIEW_SEVERITY_LABELS.get(severity, "中")
+            issue_id = str(issue.get("id") or "").strip()
+            if not issue_id or issue_id in seen_ids:
+                issue_id = f"review-issue-{index}"
+            seen_ids.add(issue_id)
+            issue["id"] = issue_id
             normalized.append(issue)
         report["issues"] = normalized
         return report

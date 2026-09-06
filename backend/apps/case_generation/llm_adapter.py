@@ -35,6 +35,9 @@ class CaseGenerationModelAdapter:
         return {"cases": validated, "coverage_report": dict(payload.get("coverage_report") or {}), "round_trace": payload.get("round_trace") if isinstance(payload.get("round_trace"), list) else []}
 
 
+REVIEW_SEVERITY_LABELS = {"high": "高", "medium": "中", "low": "低"}
+
+
 def _localize_review_text(value: str, *, suggestion: bool = False) -> str:
     """Return a concise Chinese label for common model review phrases."""
     text = value.strip()
@@ -85,6 +88,7 @@ def _validate_review_payload(payload: Mapping[str, Any], case_ids: set[str], evi
             "code": str(raw.get("code") or "model_review_issue"),
             "case_id": case_id,
             "severity": severity,
+            "severity_label": REVIEW_SEVERITY_LABELS[severity],
             "dimension": str(raw.get("dimension") or "model_review"),
             "description": localized_description,
             "suggestion": localized_suggestion,
