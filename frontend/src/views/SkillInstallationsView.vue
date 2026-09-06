@@ -8,6 +8,8 @@ const loading = ref(true)
 const saving = ref(false)
 const error = ref('')
 const formError = ref('')
+const selectedFile = ref(null)
+const fileInput = ref(null)
 const form = reactive({
   source_type: 'github',
   source_url: 'https://github.com/example/skill?ref=v1.0.0',
@@ -35,11 +37,45 @@ async function load() {
 function parseManifest() {
   try { return JSON.parse(form.manifest) } catch { formError.value = 'Manifest 必须是有效 JSON。'; return null }
 }
+async function digestFile(file) {
+  const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
+  return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('')
+}
+function chooseFile(event) {
+  const file = event.target.files?.[0] || null
+  selectedFile.value = file
+  formError.value = ''
+  if (file) form.source_url = `local://${file.name}`
+}
+function changeSource() {
+  if (form.source_type !== 'local') {
+    selectedFile.value = null
+    if (fileInput.value) fileInput.value.value = ''
+  }
+}
+async function fileBytesBase64(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let index = 0; index < bytes.length; index += chunkSize) binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize))
+  return btoa(binary)
+}
 async function create() {
   formError.value = ''; const manifest = parseManifest(); if (!manifest) return
   if (!form.source_url.trim()) { formError.value = '请输入来源地址。'; return }
-  saving.value = true
-  try { await api.createInstallation({ source_type: form.source_type, source_url: form.source_url.trim(), manifest }); form.manifest = JSON.stringify(manifest, null, 2); await load() } catch (err) { formError.value = explain(err, '来源校验失败，请检查地址和 Manifest。') } finally { saving.value = false }
+  if (form.source_type === 'local' && !selectedFile.value) { formError.value = '请选择要导入的 Skill 文件。'; return }
+  if (selectedFile.value) {
+    if (selectedFile.value.size > 50 * 1024 * 1024) { formError.value = 'Skill 文件不能超过 50 MB。'; return }
+    saving.value = true
+    try { manifest.file_hash = await digestFile(selectedFile.value); form.manifest = JSON.stringify(manifest, null, 2) } catch { formError.value = '无法读取 Skill 文件，请重新选择。'; saving.value = false; return }
+  }
+  try {
+    const created = await api.createInstallation({ source_type: form.source_type, source_url: form.source_url.trim(), manifest })
+    if (selectedFile.value) await api.verifyInstallation(created.id, { artifact_base64: await fileBytesBase64(selectedFile.value), artifact_version: manifest.version })
+    selectedFile.value = null
+    if (fileInput.value) fileInput.value.value = ''
+    await load()
+  } catch (err) { formError.value = explain(err, '来源校验失败，请检查地址、文件和 Manifest。') } finally { saving.value = false }
 }
 function setBusy(id, value) { const next = new Set(busyIds.value); value ? next.add(id) : next.delete(id); busyIds.value = next }
 function encode(value) { return btoa(unescape(encodeURIComponent(value))) }
@@ -61,7 +97,7 @@ onMounted(load)
   <WorkspaceShell active="skill-installations">
     <div class="workspace-content model-page skills-page">
       <div class="page-title-row"><div><p class="workspace-eyebrow">SKILL GOVERNANCE</p><h1>Third-party Skill installations</h1><p class="workspace-lead">添加来源并锁定版本，完成清单校验、审批、安装、回滚和卸载。所有校验在受控边界内执行。</p></div><button class="text-action" :disabled="loading" @click="load">{{ loading ? 'Loading...' : 'Refresh' }}</button></div>
-      <section class="skills-panel" style="margin-bottom:16px"><h2>添加来源</h2><form class="skills-form" @submit.prevent="create"><label>Source type<select v-model="form.source_type"><option value="local">Local</option><option value="github">GitHub</option><option value="skillhub">SkillHub</option><option value="package">Package</option></select></label><label>Source URL / path<input v-model="form.source_url" required></label><label>Manifest JSON<textarea v-model="form.manifest" rows="8" required></textarea></label><p class="skills-hint">Manifest 需包含 name、version、author、license 和完整 permissions。远程来源只做地址和清单校验。</p><p v-if="formError" class="skills-error" role="alert">{{ formError }}</p><button class="primary-action" type="submit" :disabled="saving">{{ saving ? 'Submitting...' : 'Submit installation request' }}</button></form></section>
+      <section class="skills-panel" style="margin-bottom:16px"><h2>添加来源</h2><form class="skills-form" @submit.prevent="create"><label>Source type<select v-model="form.source_type" @change="changeSource"><option value="local">Local file import</option><option value="github">GitHub</option><option value="skillhub">SkillHub</option><option value="package">Package</option></select></label><label v-if="form.source_type==='local'">Skill file<input ref="fileInput" type="file" accept=".zip,.whl,.tar.gz,.tgz,.json" @change="chooseFile" required><small v-if="selectedFile" class="skills-hint">{{ selectedFile.name }} · {{ Math.ceil(selectedFile.size / 1024) }} KB</small></label><label>Source URL / path<input v-model="form.source_url" required></label><label>Manifest JSON<textarea v-model="form.manifest" rows="8" required></textarea></label><p class="skills-hint">选择本地 Skill 文件后，页面会计算 SHA-256 并立即完成受控校验；Manifest 需包含 name、version、author、license 和完整 permissions。系统只保存来源与完整性证据，不执行第三方代码。</p><p v-if="formError" class="skills-error" role="alert">{{ formError }}</p><button class="primary-action" type="submit" :disabled="saving">{{ saving ? 'Importing...' : 'Import Skill file / submit request' }}</button></form></section>
       <section class="skills-panel"><div v-if="loading" class="state-panel" role="status">正在加载安装记录</div><div v-else-if="error" class="state-panel state-panel--error" role="alert"><p>{{ error }}</p><button type="button" @click="load">Retry</button></div><div v-else-if="!installations.length" class="skills-empty">暂无安装请求</div><table v-else class="skills-table"><thead><tr><th>Source</th><th>Version</th><th>Permissions</th><th>Status</th><th>Actions</th></tr></thead><tbody><tr v-for="item in installations" :key="item.id"><td><b>{{ item.source_type }}</b><br><small>{{ item.source_url }}</small></td><td>v{{ item.version }}</td><td><span v-for="name in permissionNames" :key="name" v-show="item.permissions?.[name]" class="skills-chip">{{ name }}</span><span v-if="!permissionNames.some(name => item.permissions?.[name])" class="skills-hint">none</span></td><td><span class="skills-chip" :class="{ off: ['failed','rolled_back','uninstalled'].includes(item.status) }">{{ item.status_label || statusText[item.status] || item.status }}</span><p v-if="item.error_message" class="skills-error">{{ item.error_message }}</p></td><td><div class="skills-actions"><button v-if="item.status==='pending' || item.status==='failed'" class="text-action" :disabled="busyIds.has(item.id)" @click="verify(item)">Verify</button><button v-if="item.status==='verified'" class="text-action" :disabled="busyIds.has(item.id)" @click="transition(item,'approveInstallation','approve')">Approve</button><button v-if="item.status==='verified' && item.approved_by" class="text-action" :disabled="busyIds.has(item.id)" @click="transition(item,'installSkillInstallation','install')">Install</button><button v-if="item.status==='installed'" class="text-action" :disabled="busyIds.has(item.id)" @click="transition(item,'rollbackInstallation','rollback')">Rollback</button><button v-if="item.status==='installed'" class="danger text-action" :disabled="busyIds.has(item.id)" @click="transition(item,'uninstallInstallation','uninstall')">Uninstall</button></div></td></tr></tbody></table></section>
     </div>
   </WorkspaceShell>
