@@ -89,3 +89,25 @@ class SkillInstallation(models.Model):
     def __str__(self) -> str:
         """Return a concise audit label."""
         return f"{self.source_type}:{self.version} ({self.status})"
+
+
+class SkillPermissionAudit(models.Model):
+    """Record every third-party Skill permission decision."""
+
+    installation = models.ForeignKey(SkillInstallation, on_delete=models.CASCADE, related_name="permission_audits")
+    permission = models.CharField("Permission", max_length=40)
+    allowed = models.BooleanField(default=False)
+    reason = models.CharField("Decision reason", max_length=200)
+    context_keys = models.JSONField("Context keys", default=list, blank=True)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="skill_permission_audits")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        """Keep permission decisions in chronological order for audit review."""
+
+        ordering = ("-created_at",)
+        indexes = [models.Index(fields=("installation", "permission", "created_at"), name="skills_perm_audit_idx")]
+
+    def __str__(self) -> str:
+        """Return a concise permission decision label."""
+        return f"{self.permission}: {'allowed' if self.allowed else 'denied'}"

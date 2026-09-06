@@ -1,5 +1,5 @@
 from django.contrib import admin
-from apps.skills.models import Skill, SkillInstallation
+from apps.skills.models import Skill, SkillInstallation, SkillPermissionAudit
 
 @admin.register(Skill)
 class SkillAdmin(admin.ModelAdmin):
@@ -18,3 +18,13 @@ class SkillInstallationAdmin(admin.ModelAdmin):
     list_filter = ("source_type", "status")
     search_fields = ("source_url", "version", "commit_hash", "file_hash")
     readonly_fields = ("created_at", "updated_at", "approved_at", "installed_at", "rolled_back_at")
+
+
+@admin.register(SkillPermissionAudit)
+class SkillPermissionAuditAdmin(admin.ModelAdmin):
+    """Expose permission decisions without exposing request values."""
+
+    list_display = ("installation", "permission", "allowed", "reason", "actor", "created_at")
+    list_filter = ("permission", "allowed")
+    search_fields = ("permission", "reason")
+    readonly_fields = ("installation", "permission", "allowed", "reason", "context_keys", "actor", "created_at")
