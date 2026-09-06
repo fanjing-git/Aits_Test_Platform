@@ -17,7 +17,7 @@ class CaseGenerationRecordTests(TestCase):
         self.document = RequirementDocument.objects.create(project=self.project, title="Login", content_text="User can login", created_by=self.user)
 
     def test_record_stores_counts_and_status(self) -> None:
-        record = CaseGenerationRecord.objects.create(project=self.project, document=self.document, rounds=1, total_cases=3, auto_cases=2, manual_cases=1)
+        record = CaseGenerationRecord.objects.create(project=self.project, document=self.document, rounds=1, total_cases=3, auto_cases=2, manual_cases=1, cases=[{"id": "case-001"}], coverage_report={"coverage_rate": 1})
         self.assertEqual(record.status, CaseGenerationRecord.Status.GENERATING)
         self.assertEqual(str(record), "Login (generating)")
 

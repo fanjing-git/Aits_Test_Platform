@@ -21,6 +21,8 @@ class CaseGenerationRecord(models.Model):
     total_cases = models.PositiveIntegerField(default=0)
     auto_cases = models.PositiveIntegerField(default=0)
     manual_cases = models.PositiveIntegerField(default=0)
+    cases = models.JSONField(default=list)
+    coverage_report = models.JSONField(default=dict)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.GENERATING, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
