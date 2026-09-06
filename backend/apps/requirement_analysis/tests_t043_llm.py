@@ -1,5 +1,6 @@
 """Focused tests for the optional structured requirement model adapter."""
 
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -9,7 +10,7 @@ from django.test import SimpleTestCase, TestCase
 from apps.configs.models import ModelConfig
 from apps.projects.models import Project
 from apps.requirement_analysis.analyzer import analyze_requirement_document
-from apps.requirement_analysis.llm_adapter import ModelAnalysisError, RequirementModelAdapter
+from apps.requirement_analysis.llm_adapter import ModelAnalysisError, OpenAICompatibleRuntime, RequirementModelAdapter
 from apps.requirement_analysis.models import RequirementDocument
 
 
@@ -41,6 +42,33 @@ class RequirementModelAdapterTests(SimpleTestCase):
         prompts = Mock(); prompts.resolve.return_value = SimpleNamespace(content="JSON")
         with self.assertRaises(ModelAnalysisError):
             RequirementModelAdapter(model_manager=manager, prompt_manager=prompts).analyze(text="内容", evidence=[{"id": "known", "text": "内容"}])
+
+    def test_unrelated_model_output_is_rejected(self) -> None:
+        runtime = Mock()
+        runtime.generate_structured.return_value = {
+            "modules": [{"id": "m1", "name": "登录"}],
+            "functions": [{"id": "f1", "name": "登录"}],
+            "linkages": [],
+            "test_points": [{"id": "p1", "description": "验证登录", "evidence_ids": ["known"]}],
+        }
+        manager = Mock()
+        manager.execute_with_fallback.side_effect = lambda _task, operation, **_kwargs: operation(runtime, SimpleNamespace(name="fake"))
+        prompts = Mock(); prompts.resolve.return_value = SimpleNamespace(content="JSON")
+        with self.assertRaises(ModelAnalysisError):
+            RequirementModelAdapter(model_manager=manager, prompt_manager=prompts).analyze(text="背包整理", evidence=[{"id": "known", "text": "背包整理"}])
+
+    def test_deepseek_disables_reasoning_for_structured_output(self) -> None:
+        config = ModelConfig(provider=ModelConfig.Provider.DEEPSEEK, model_name="deepseek-v4-flash", api_base_url="https://example.test/v1", parameters={})
+        response = Mock()
+        response.read.return_value = json.dumps({"choices": [{"message": {"content": '{"ok": true}'}}]}).encode()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        with patch("apps.requirement_analysis.llm_adapter.urlopen", return_value=response) as opener:
+            result = OpenAICompatibleRuntime(config).generate_structured(prompt="JSON", text="text", evidence=[])
+        self.assertEqual(result, {"ok": True})
+        request = opener.call_args.args[0]
+        body = json.loads(request.data.decode())
+        self.assertEqual(body["thinking"], {"type": "disabled"})
 
 
 class RequirementModelIntegrationTests(TestCase):
