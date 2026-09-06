@@ -7,7 +7,7 @@ import { analyzeRequirementDocument, createRequirementDocument, deleteRequiremen
 const projects = ref([]); const documents = ref([]); const selectedProject = ref(''); const selectedDocument = ref(null)
 const loading = ref(true); const busy = ref(false); const error = ref(''); const notice = ref(''); const formError = ref(''); const showForm = ref(false)
 const file = ref(null); const form = reactive({ title: '', version: '1.0', source_type: 'manual', source_url: '', content_text: '' })
-const canWrite = computed(() => ['admin', 'owner', 'manager'].includes(selectedProject.value ? projects.value.find(item => item.id === selectedProject.value)?.current_role : ''))
+const canWrite = computed(() => ['admin', 'platform_admin', 'owner', 'manager'].includes(selectedProject.value ? projects.value.find(item => item.id === selectedProject.value)?.current_role : ''))
 
 function explain(err, fallback) { const data = err.response?.data; if (typeof data?.detail === 'string') return data.detail; const first = data && Object.values(data)[0]; return Array.isArray(first) ? first[0] : (typeof first === 'string' ? first : fallback) }
 async function loadProjects() { try { projects.value = await listProjects(); if (!selectedProject.value && projects.value.length) selectedProject.value = projects.value[0].id } catch (err) { error.value = explain(err, '项目加载失败，请确认服务状态后重试。') } }
