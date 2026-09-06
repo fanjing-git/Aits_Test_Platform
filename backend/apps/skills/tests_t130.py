@@ -11,6 +11,7 @@ from apps.skills.installation import (
     verify_installation,
 )
 from apps.skills.models import SkillPermissionAudit
+from apps.skills.admin import SkillPermissionAuditAdmin
 from apps.skills.permissions import SkillPermissionError, enforce_skill_permission
 from apps.skills.sources import PERMISSION_KEYS, discover_skill_manifest
 from apps.users.models import UserProfile
@@ -112,3 +113,13 @@ class SkillPermissionAuditApiTests(APITestCase):
         self.assertEqual(self.client.get("/api/skills/permission-audits/").status_code, 403)
         self.client.force_authenticate(None)
         self.assertEqual(self.client.get("/api/skills/permission-audits/").status_code, 401)
+
+
+class SkillPermissionAuditAdminTests(TestCase):
+    """Ensure Django Admin cannot create, edit, or delete audit evidence."""
+
+    def test_audit_admin_is_read_only(self) -> None:
+        model_admin = SkillPermissionAuditAdmin(SkillPermissionAudit, None)
+        self.assertFalse(model_admin.has_add_permission(None))
+        self.assertFalse(model_admin.has_change_permission(None))
+        self.assertFalse(model_admin.has_delete_permission(None))

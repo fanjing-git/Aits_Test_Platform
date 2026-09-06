@@ -28,3 +28,15 @@ class SkillPermissionAuditAdmin(admin.ModelAdmin):
     list_filter = ("permission", "allowed")
     search_fields = ("permission", "reason")
     readonly_fields = ("installation", "permission", "allowed", "reason", "context_keys", "actor", "created_at")
+
+    def has_add_permission(self, request) -> bool:
+        """Prevent manual records that would bypass the runtime guard."""
+        return False
+
+    def has_change_permission(self, request, obj=None) -> bool:
+        """Keep audit decisions immutable after they are recorded."""
+        return False
+
+    def has_delete_permission(self, request, obj=None) -> bool:
+        """Retain audit history and disallow destructive admin actions."""
+        return False
