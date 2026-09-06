@@ -38,7 +38,7 @@ class RequirementDocumentSerializer(serializers.ModelSerializer):
         fields = (
             "id", "project", "project_name", "title", "version", "source_type",
             "source_type_label", "source_url", "content_text", "status", "status_label",
-            "latest_analysis", "file", "created_by", "created_at",
+            "parse_evidence", "parse_confidence", "parse_warnings", "latest_analysis", "file", "created_by", "created_at",
         )
         read_only_fields = ("id", "status", "status_label", "latest_analysis", "created_by", "created_at")
         extra_kwargs = {"content_text": {"required": False, "allow_blank": True}}

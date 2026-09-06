@@ -35,6 +35,9 @@ class ParsedDocument:
     format: str
     source_type: str
     source_url: str = ""
+    evidence: tuple[dict[str, Any], ...] = ()
+    confidence: float = 1.0
+    warnings: tuple[str, ...] = ()
 
 
 def _normalize(text: str) -> str:
@@ -50,7 +53,7 @@ def _bounded(content: bytes) -> bytes:
     return content
 
 
-def _parse_xlsx(content: bytes) -> str:
+def _parse_xlsx(content: bytes) -> tuple[str, list[dict[str, Any]]]:
     """Extract visible cell values from XLSX XML without evaluating formulas."""
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
@@ -61,6 +64,7 @@ def _parse_xlsx(content: bytes) -> str:
                 shared = ["".join(node.text or "" for node in item.iter() if node.tag.endswith("}t") or node.tag == "t") for item in root if item.tag.endswith("}si") or item.tag == "si"]
             sheets = sorted(name for name in names if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", name))
             rows: list[str] = []
+            evidence: list[dict[str, Any]] = []
             for sheet in sheets:
                 root = ElementTree.fromstring(archive.read(sheet))
                 for row in root.iter():
@@ -84,23 +88,33 @@ def _parse_xlsx(content: bytes) -> str:
                         values.append(value)
                     if any(values):
                         rows.append("\t".join(values))
-            return _normalize("\n".join(rows))
+                        evidence.append({"id": f"sheet-{Path(sheet).stem}-row-{len(rows)}", "kind": "cell_row", "location": sheet, "text": "\t".join(values), "confidence": 1.0})
+            return _normalize("\n".join(rows)), evidence
     except (OSError, KeyError, ValueError, ElementTree.ParseError, zipfile.BadZipFile) as exc:
         raise DocumentParseError("Excel 文档解析失败，请检查文件内容。") from exc
 
 
-def _parse_swagger(content: bytes) -> str:
+def _parse_swagger(content: bytes) -> tuple[str, list[dict[str, Any]]]:
     try:
         value = json.loads(content.decode("utf-8-sig"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise DocumentParseError("Swagger/OpenAPI 内容不是有效 JSON。") from exc
     if not isinstance(value, dict) or not (value.get("openapi") or value.get("swagger")):
         raise DocumentParseError("JSON 文档未声明 openapi 或 swagger 版本。")
-    return json.dumps(value, ensure_ascii=False, indent=2)
+    text = json.dumps(value, ensure_ascii=False, indent=2)
+    evidence = []
+    for path, methods in (value.get("paths") or {}).items():
+        if isinstance(methods, dict):
+            for method, operation in methods.items():
+                if method.casefold() not in {"get", "post", "put", "patch", "delete", "options", "head", "trace"}:
+                    continue
+                summary = operation.get("summary") if isinstance(operation, dict) else ""
+                evidence.append({"id": f"path-{len(evidence)+1}", "kind": "api_operation", "location": f"{method.upper()} {path}", "text": str(summary or path), "confidence": 1.0})
+    return text, evidence
 
 
-def _parse_image(content: bytes) -> str:
-    """Run optional local OCR without allowing an unconfigured binary to leak errors."""
+def _parse_image(content: bytes) -> tuple[str, list[dict[str, Any]], float, list[str]]:
+    """Extract OCR text with confidence and fail closed when Chinese language data is absent."""
     try:
         from PIL import Image
         import pytesseract
@@ -112,7 +126,35 @@ def _parse_image(content: bytes) -> str:
         if command:
             pytesseract.pytesseract.tesseract_cmd = command
         with Image.open(io.BytesIO(content)) as image:
-            return _normalize(pytesseract.image_to_string(image))
+            image = image.convert("RGB")
+            image = image.resize((max(image.width, 1600), max(image.height, 900)))
+            available = set(pytesseract.get_languages(config=""))
+            requested = os.environ.get("TESSERACT_LANG", "chi_sim+eng")
+            languages = "+".join(item for item in requested.split("+") if item in available)
+            warnings: list[str] = []
+            if "chi_sim" in requested.split("+") and "chi_sim" not in available:
+                warnings.append("未安装中文 OCR 语言包（chi_sim），已停止输出低可信中文识别结果。")
+                return "", [], 0.0, warnings
+            if not languages:
+                raise DocumentParseError("OCR 语言包不可用，请安装并配置 Tesseract 语言数据。")
+            data = pytesseract.image_to_data(image, lang=languages, output_type=pytesseract.Output.DICT)
+            words: list[str] = []
+            evidence: list[dict[str, Any]] = []
+            confidences: list[float] = []
+            for index, raw in enumerate(data.get("text", [])):
+                word = _normalize(str(raw))
+                try:
+                    confidence = float(data.get("conf", ["-1"])[index]) / 100.0
+                except (TypeError, ValueError, IndexError):
+                    confidence = 0.0
+                if not word or confidence <= 0:
+                    continue
+                words.append(word)
+                confidences.append(confidence)
+                evidence.append({"id": f"ocr-{len(evidence)+1}", "kind": "ocr_word", "location": {"left": data.get("left", [0])[index], "top": data.get("top", [0])[index], "width": data.get("width", [0])[index], "height": data.get("height", [0])[index]}, "text": word, "confidence": round(confidence, 4)})
+            text = _normalize(" ".join(words))
+            confidence = round(sum(confidences) / len(confidences), 4) if confidences else 0.0
+            return text, evidence, confidence, warnings
     except ImportError as exc:
         raise DocumentParseError("图片 OCR 依赖未安装，暂时无法解析图片。") from exc
     except Exception as exc:  # noqa: BLE001 - sanitize PIL/Tesseract failures
@@ -128,27 +170,36 @@ def parse_document_bytes(content: bytes | bytearray, filename: str, *, source_ur
     try:
         if suffix in {".txt", ".md", ".markdown"}:
             text = _normalize(data.decode("utf-8-sig")); fmt = "markdown" if suffix != ".txt" else "text"
+            evidence = [{"id": f"line-{index}", "kind": "line", "location": {"line": index}, "text": line, "confidence": 1.0} for index, line in enumerate(text.splitlines(), start=1) if line.strip()]
+            confidence = 1.0; warnings = []
         elif suffix == ".pdf":
-            text = _normalize("\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(data)).pages)); fmt = "pdf"
+            pages = [page.extract_text() or "" for page in PdfReader(io.BytesIO(data)).pages]
+            text = _normalize("\n".join(pages)); fmt = "pdf"
+            evidence = [{"id": f"page-{index}", "kind": "page", "location": {"page": index}, "text": _normalize(page), "confidence": 1.0} for index, page in enumerate(pages, start=1) if _normalize(page)]
+            confidence = 1.0; warnings = []
         elif suffix == ".docx":
             document = WordDocument(io.BytesIO(data))
             paragraphs = [paragraph.text for paragraph in document.paragraphs]
             tables = ["\t".join(cell.text for cell in row.cells) for table in document.tables for row in table.rows]
             text = _normalize("\n".join(paragraphs + tables)); fmt = "word"
+            evidence = [{"id": f"paragraph-{index}", "kind": "paragraph", "location": {"paragraph": index}, "text": _normalize(value), "confidence": 1.0} for index, value in enumerate(paragraphs + tables, start=1) if _normalize(value)]
+            confidence = 1.0; warnings = []
         elif suffix == ".xlsx":
-            text = _parse_xlsx(data); fmt = "excel"
+            text, evidence = _parse_xlsx(data); fmt = "excel"; confidence = 1.0; warnings = []
         elif suffix == ".json":
-            text = _parse_swagger(data); fmt = "swagger"
+            text, evidence = _parse_swagger(data); fmt = "swagger"; confidence = 1.0; warnings = []
         else:
-            text = _parse_image(data)
+            text, evidence, confidence, warnings = _parse_image(data)
             fmt = "ocr"
     except DocumentParseError:
         raise
     except (OSError, UnicodeDecodeError, ValueError, TypeError) as exc:
         raise DocumentParseError("文档解析失败，请检查文件格式和内容。") from exc
     if not text:
+        if warnings:
+            raise DocumentParseError("；".join(warnings))
         raise DocumentParseError("文档未提取到可用文本。")
-    return ParsedDocument(Path(filename).stem or "需求文档", text, fmt, "file", source_url)
+    return ParsedDocument(Path(filename).stem or "需求文档", text, fmt, "file", source_url, tuple(evidence), confidence, tuple(warnings))
 
 
 def parse_file(path: str | Path) -> ParsedDocument:
@@ -176,7 +227,8 @@ def parse_online(url: str) -> ParsedDocument:
     content = _normalize(result.content)
     if not content:
         raise DocumentParseError("在线文档未提取到可用文本。")
-    return ParsedDocument(title, content, fmt, result.source_type, result.source_url)
+    evidence = [{"id": f"line-{index}", "kind": "online_line", "location": {"line": index}, "text": line, "confidence": 1.0} for index, line in enumerate(content.splitlines(), start=1) if line.strip()]
+    return ParsedDocument(title, content, fmt, result.source_type, result.source_url, tuple(evidence), 1.0, ())
 
 
 def parse_requirement_document(document: Any) -> ParsedDocument:
@@ -187,18 +239,27 @@ def parse_requirement_document(document: Any) -> ParsedDocument:
         if document.source_type == document.SourceType.ONLINE_LINK:
             parsed = parse_online(document.source_url)
         elif document.source_type in {document.SourceType.FILE, document.SourceType.SCREENSHOT}:
-            parsed = parse_file(document.file_path)
+            if document.file_path:
+                parsed = parse_file(document.file_path)
+            elif document.content_text.strip():
+                parsed = parse_document_bytes(document.content_text.encode("utf-8"), f"{document.title}.md")
+            else:
+                raise DocumentParseError("文件来源必须提供文件或正文。")
         elif document.source_type == document.SourceType.MANUAL:
             parsed = parse_document_bytes(document.content_text.encode("utf-8"), f"{document.title}.md")
         else:
             raise DocumentParseError("暂不支持该需求文档来源类型。")
         document.content_text = parsed.content
+        document.parse_evidence = list(parsed.evidence)
+        document.parse_confidence = parsed.confidence
+        document.parse_warnings = list(parsed.warnings)
         document.status = document.Status.ANALYZING
-        document.save(update_fields=("content_text", "status"))
+        document.save(update_fields=("content_text", "parse_evidence", "parse_confidence", "parse_warnings", "status"))
         return parsed
-    except DocumentParseError:
+    except DocumentParseError as exc:
         document.status = document.Status.FAILED
-        document.save(update_fields=("status",))
+        document.parse_warnings = [str(exc) or "需求来源解析失败，未生成可供分析的证据。"]
+        document.save(update_fields=("status", "parse_warnings"))
         raise
 
 

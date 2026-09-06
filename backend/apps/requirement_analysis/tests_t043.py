@@ -41,6 +41,21 @@ class RequirementDeepAnalysisTests(TestCase):
         self.assertEqual(len(result.test_points), 35)
         self.assertIn("需人工确认", result.coverage_report["visual_baseline_note"])
 
+    def test_analysis_traces_source_evidence_and_marks_low_confidence(self) -> None:
+        result = deep_analyze(
+            "乱码 OCR",
+            title="截图",
+            source_type=RequirementDocument.SourceType.SCREENSHOT,
+            evidence=[{"id": "ocr-1", "text": "乱码 OCR", "confidence": 0.2}],
+            source_confidence=0.2,
+            warnings=["未安装中文 OCR 语言包。"],
+        )
+        self.assertTrue(result.coverage_report["needs_confirmation"])
+        self.assertEqual(result.coverage_report["evidence_count"], 1)
+        self.assertEqual(len(result.functions), 4)
+        self.assertTrue(all(item["needs_confirmation"] for item in result.test_points))
+        self.assertTrue(all("ocr-1" in item["evidence_ids"] for item in result.functions))
+
     def test_document_analysis_is_persisted_and_repeated_runs_keep_history(self) -> None:
         user = get_user_model().objects.create_user(username="deep-analysis-owner")
         project = Project.objects.create(name="Deep analysis project", created_by=user)

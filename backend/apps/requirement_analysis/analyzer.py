@@ -78,7 +78,7 @@ def _relationship(source: str, target: str) -> str:
     return "sequence"
 
 
-def _function_test_points(function: dict[str, Any], start: int) -> list[dict[str, Any]]:
+def _function_test_points(function: dict[str, Any], start: int, *, evidence_ids: list[str] | None = None, needs_confirmation: bool = False) -> list[dict[str, Any]]:
     """Build a broad but explainable baseline around one function."""
     name = function["name"]
     function_id = function["id"]
@@ -92,12 +92,12 @@ def _function_test_points(function: dict[str, Any], start: int) -> list[dict[str
         ("boundary", "状态恢复", "验证中断、网络恢复和重新进入页面后状态与结果保持一致"),
     ]
     return [
-        {"id": f"test-point-{start + index}", "function_id": function_id, "type": kind, "scenario": scenario, "description": f"{description}：{name}"}
+        {"id": f"test-point-{start + index}", "function_id": function_id, "type": kind, "scenario": scenario, "description": f"{description}：{name}", "evidence_ids": evidence_ids or [], "needs_confirmation": needs_confirmation}
         for index, (kind, scenario, description) in enumerate(cases)
     ]
 
 
-def deep_analyze(text: str, *, title: str = "需求文档", source_type: str = "manual") -> DeepAnalysis:
+def deep_analyze(text: str, *, title: str = "需求文档", source_type: str = "manual", evidence: list[dict[str, Any]] | None = None, source_confidence: float = 1.0, warnings: list[str] | None = None) -> DeepAnalysis:
     """Decompose requirement text into modules, functions, flows and test points.
 
     The implementation is intentionally deterministic and explainable. It does not
@@ -107,14 +107,23 @@ def deep_analyze(text: str, *, title: str = "需求文档", source_type: str = "
     normalized = "\n".join(line.strip() for line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")).strip()
     if not normalized:
         raise RequirementAnalysisError("需求文本不能为空。")
-    sections = _module_sections(normalized)
+    warnings = list(warnings or [])
+    needs_confirmation = source_confidence < 0.75 or bool(warnings)
+    if source_type == RequirementDocument.SourceType.SCREENSHOT and needs_confirmation:
+        normalized = ""
+        sections = []
+    else:
+        sections = _module_sections(normalized)
     modules: list[dict[str, Any]] = []
     functions: list[dict[str, Any]] = []
     actors = sorted({term for term in _ACTOR_TERMS if term.casefold() in normalized.casefold()})
     for module_index, (module_name, sentences) in enumerate(sections, start=1):
         module_id = f"module-{module_index}"
-        modules.append({"id": module_id, "name": module_name, "summary": sentences[0][:160], "actors": actors})
+        modules.append({"id": module_id, "name": module_name, "summary": sentences[0][:160], "actors": actors, "evidence_ids": []})
         for function_index, sentence in enumerate(sentences, start=1):
+            evidence_ids = []
+            if evidence:
+                evidence_ids = [str(item.get("id")) for item in evidence if sentence.casefold() in str(item.get("text", "")).casefold() or str(item.get("text", "")).casefold() in sentence.casefold()][:3]
             functions.append({
                 "id": f"{module_id}-function-{function_index}",
                 "module_id": module_id,
@@ -122,6 +131,8 @@ def deep_analyze(text: str, *, title: str = "需求文档", source_type: str = "
                 "description": sentence,
                 "actors": [actor for actor in actors if actor.casefold() in sentence.casefold()],
                 "acceptance_criteria": [f"{sentence[:120]}可完成并返回可验证结果"],
+                "evidence_ids": evidence_ids,
+                "needs_confirmation": needs_confirmation,
             })
     linkages: list[dict[str, Any]] = []
     for previous, current in zip(functions, functions[1:]):
@@ -133,10 +144,10 @@ def deep_analyze(text: str, *, title: str = "需求文档", source_type: str = "
             data_flows.append({"data": data_items, "from": function["id"], "to": functions[index + 1]["id"], "direction": "forward"})
     test_points: list[dict[str, Any]] = []
     for function in functions:
-        test_points.extend(_function_test_points(function, len(test_points) + 1))
+        test_points.extend(_function_test_points(function, len(test_points) + 1, evidence_ids=function.get("evidence_ids", []), needs_confirmation=needs_confirmation))
     if source_type == RequirementDocument.SourceType.SCREENSHOT:
         visual_module_id = "module-visual-baseline"
-        modules.append({"id": visual_module_id, "name": "截图界面行为基线", "summary": "基于截图可观察行为建立待人工确认的视觉测试基线", "actors": actors})
+        modules.append({"id": visual_module_id, "name": "截图界面行为基线", "summary": "基于截图可观察行为建立待人工确认的视觉测试基线", "actors": actors, "evidence_ids": [str(item.get("id")) for item in (evidence or [])]})
         visual_functions = (
             ("页面元素可见性", "验证关键文字、图标、按钮和交互区域在加载完成后可见且状态清晰"),
             ("界面导航与切换", "验证菜单、标签页和返回操作不会丢失当前上下文"),
@@ -144,9 +155,9 @@ def deep_analyze(text: str, *, title: str = "需求文档", source_type: str = "
             ("操作反馈与错误提示", "验证点击、处理中、成功、失败和重试反馈及时且不会误导用户"),
         )
         for index, (name, description) in enumerate(visual_functions, start=1):
-            function = {"id": f"{visual_module_id}-function-{index}", "module_id": visual_module_id, "name": name, "description": description, "actors": actors, "acceptance_criteria": [description]}
+            function = {"id": f"{visual_module_id}-function-{index}", "module_id": visual_module_id, "name": name, "description": description, "actors": actors, "acceptance_criteria": [description], "evidence_ids": [str(item.get("id")) for item in (evidence or [])], "needs_confirmation": True}
             functions.append(function)
-            test_points.extend(_function_test_points(function, len(test_points) + 1))
+            test_points.extend(_function_test_points(function, len(test_points) + 1, evidence_ids=function["evidence_ids"], needs_confirmation=True))
     coverage = {
         "title": title,
         "module_count": len(modules),
@@ -157,6 +168,11 @@ def deep_analyze(text: str, *, title: str = "需求文档", source_type: str = "
         "actors": actors,
         "data_flows": data_flows,
         "completeness": round(min(1.0, len(test_points) / max(1, len(functions) * 3)), 4),
+        "source_confidence": round(max(0.0, min(1.0, source_confidence)), 4),
+        "needs_confirmation": needs_confirmation,
+        "analysis_method": "deterministic_evidence_baseline",
+        "analysis_warnings": warnings,
+        "evidence_count": len(evidence or []),
     }
     if source_type == RequirementDocument.SourceType.SCREENSHOT:
         coverage["visual_baseline"] = True
@@ -172,7 +188,7 @@ def analyze_requirement_document(document: RequirementDocument) -> RequirementAn
     document.status = RequirementDocument.Status.ANALYZING
     document.save(update_fields=("status",))
     try:
-        result = deep_analyze(document.content_text, title=document.title, source_type=document.source_type)
+        result = deep_analyze(document.content_text, title=document.title, source_type=document.source_type, evidence=document.parse_evidence, source_confidence=document.parse_confidence, warnings=document.parse_warnings)
         analysis = RequirementAnalysis.objects.create(document=document, **result.as_dict())
         document.status = RequirementDocument.Status.ANALYZED
         document.save(update_fields=("status",))

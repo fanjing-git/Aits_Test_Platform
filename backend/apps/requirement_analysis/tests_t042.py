@@ -57,6 +57,12 @@ class RequirementParserTests(SimpleTestCase):
         with self.assertRaisesRegex(DocumentParseError, "OCR"):
             parse_document_bytes(b"not-an-image", "screen.png")
 
+    def test_text_parser_keeps_line_evidence(self) -> None:
+        result = parse_document_bytes("# 登录\n用户提交账号。".encode("utf-8"), "requirement.md")
+        self.assertEqual(result.confidence, 1.0)
+        self.assertEqual([item["location"]["line"] for item in result.evidence], [1, 2])
+        self.assertEqual(result.evidence[1]["text"], "用户提交账号。")
+
 
 class PersistedRequirementParserTests(TestCase):
     """Ensure parsing updates persisted document lifecycle state safely."""
@@ -69,6 +75,12 @@ class PersistedRequirementParserTests(TestCase):
         self.assertEqual(result.content, "User can login")
         document.refresh_from_db()
         self.assertEqual(document.status, RequirementDocument.Status.ANALYZING)
+        self.assertEqual(document.parse_confidence, 1.0)
+        self.assertTrue(document.parse_evidence)
+
+        screenshot_text = RequirementDocument.objects.create(project=project, title="Screenshot text", source_type=RequirementDocument.SourceType.SCREENSHOT, content_text="页面显示背包", created_by=user)
+        parsed_screenshot = parse_requirement_document(screenshot_text)
+        self.assertEqual(parsed_screenshot.content, "页面显示背包")
 
         broken = RequirementDocument.objects.create(project=project, title="Empty", content_text="", created_by=user)
         with self.assertRaises(DocumentParseError): parse_requirement_document(broken)

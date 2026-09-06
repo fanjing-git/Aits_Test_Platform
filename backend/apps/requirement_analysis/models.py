@@ -4,6 +4,7 @@ from uuid import uuid4
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.core.validators import MaxValueValidator, MinValueValidator
 
 def validate_list(value: Any) -> None:
     """Require a JSON list."""
@@ -27,6 +28,9 @@ class RequirementDocument(models.Model):
     source_url = models.URLField("来源地址", max_length=1000, blank=True)
     file_path = models.CharField("文件路径", max_length=1000, blank=True)
     content_text = models.TextField("正文", blank=True)
+    parse_evidence = models.JSONField("解析证据", default=list, validators=[validate_list])
+    parse_confidence = models.FloatField("解析置信度", default=0.0, validators=[MinValueValidator(0.0), MaxValueValidator(1.0)])
+    parse_warnings = models.JSONField("解析警告", default=list, validators=[validate_list])
     status = models.CharField("状态", max_length=20, choices=Status.choices, default=Status.UPLOADED, db_index=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="created_requirement_documents", verbose_name="创建者")
     created_at = models.DateTimeField("创建时间", auto_now_add=True)
