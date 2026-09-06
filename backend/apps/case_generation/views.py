@@ -53,6 +53,8 @@ class CaseGenerationViewSet(viewsets.ModelViewSet):
         record = self.get_object()
         if not can_manage_requirements(request.user, record.project):
             raise PermissionDenied("当前项目角色不能评审测试用例。")
+        if record.review_rounds >= 5 and isinstance(record.review_report, dict) and "approved" in record.review_report:
+            return Response(self.get_serializer(record).data)
         try:
             record = review_generation_record(record)
         except CaseReviewError as exc:
@@ -65,6 +67,8 @@ class CaseGenerationViewSet(viewsets.ModelViewSet):
         record = self.get_object()
         if not can_manage_requirements(request.user, record.project):
             raise PermissionDenied("当前项目角色不能筛选测试用例。")
+        if isinstance(record.coverage_report, dict) and isinstance(record.coverage_report.get("automation_selection"), dict):
+            return Response(self.get_serializer(record).data)
         try:
             record = select_generation_record(record)
         except CaseSelectionError as exc:

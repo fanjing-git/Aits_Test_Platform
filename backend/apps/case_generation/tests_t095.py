@@ -38,6 +38,20 @@ class CaseGenerationApiTests(TestCase):
         self.assertEqual(selected.status_code, status.HTTP_200_OK)
         self.assertIn("automation_selection", selected.data["coverage_report"])
 
+    def test_repeated_review_and_selection_are_idempotent(self) -> None:
+        self.client.force_authenticate(self.owner)
+        created = self.client.post(self.url, {"document": str(self.document.pk)}, format="json")
+        record_id = created.data["id"]
+        first_review = self.client.post(f"{self.url}{record_id}/review/")
+        second_review = self.client.post(f"{self.url}{record_id}/review/")
+        self.assertEqual(first_review.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_review.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_review.data["review_report"], first_review.data["review_report"])
+        first_select = self.client.post(f"{self.url}{record_id}/select/")
+        second_select = self.client.post(f"{self.url}{record_id}/select/")
+        self.assertEqual(second_select.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_select.data["coverage_report"]["automation_selection"], first_select.data["coverage_report"]["automation_selection"])
+
     def test_viewer_reads_but_cannot_mutate_and_outsider_is_hidden(self) -> None:
         self.client.force_authenticate(self.owner)
         self.assertEqual(self.client.post(self.url, {"document": str(self.document.pk)}, format="json").status_code, status.HTTP_201_CREATED)
