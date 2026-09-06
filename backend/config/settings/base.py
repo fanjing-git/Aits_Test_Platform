@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     "apps.knowledge.apps.KnowledgeConfig",
     "apps.skills.apps.SkillsConfig",
     "apps.requirement_analysis.apps.RequirementAnalysisConfig",
+    "apps.case_generation.apps.CaseGenerationConfig",
 ]
 
 REST_FRAMEWORK = {
