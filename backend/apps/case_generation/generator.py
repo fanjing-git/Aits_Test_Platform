@@ -4,7 +4,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from apps.configs.models import ModelConfig
 from apps.case_generation.models import CaseGenerationRecord
+from apps.case_generation.llm_adapter import CaseGenerationModelAdapter
+from apps.requirement_analysis.llm_adapter import ModelAnalysisError
 from apps.requirement_analysis.models import RequirementAnalysis, RequirementDocument
 
 
@@ -47,7 +50,7 @@ def _case(function: Mapping[str, Any], kind: str, round_added: int, *, linkage: 
     }
 
 
-def generate_cases(analysis: RequirementAnalysis | Mapping[str, Any]) -> CaseGenerationResult:
+def generate_cases(analysis: RequirementAnalysis | Mapping[str, Any], *, model_adapter: CaseGenerationModelAdapter | None = None, evidence: list[dict[str, Any]] | None = None, project_name: str | None = None) -> CaseGenerationResult:
     """Run initial generation, comparison, gap fill, correction and confirmation."""
     payload = _analysis_payload(analysis)
     functions = payload.get("functions")
@@ -58,9 +61,27 @@ def generate_cases(analysis: RequirementAnalysis | Mapping[str, Any]) -> CaseGen
         raise CaseGenerationError("功能点缺少有效标识。")
     cases: list[dict[str, Any]] = []
     trace: list[dict[str, Any]] = []
+    model_used = False
+    model_warning = ""
+    if model_adapter:
+        try:
+            model_result = model_adapter.generate(functions=functions, linkages=payload.get("linkages", []) if isinstance(payload.get("linkages"), list) else [], evidence=evidence or [], project_name=project_name)
+            for item in model_result["cases"]:
+                normalized = dict(item)
+                normalized.setdefault("id", "")
+                normalized.setdefault("priority", "P0" if normalized.get("type") in {"positive", "linkage"} else "P1")
+                normalized.setdefault("automatable", normalized.get("type") != "linkage")
+                normalized.setdefault("round_added", 1)
+                normalized.setdefault("linkage_id", None)
+                cases.append(normalized)
+            model_used = True
+            trace.append({"round": 1, "stage": "model_initial", "added": len(cases), "note": "结构化模型生成并通过来源校验"})
+        except ModelAnalysisError as exc:
+            model_warning = str(exc)
     # Round 1: one positive path per function.
-    cases.extend(_case(function, "positive", 1) for function in functions)
-    trace.append({"round": 1, "stage": "initial", "added": len(cases), "note": "每个功能点生成正常流程"})
+    if not model_used:
+        cases.extend(_case(function, "positive", 1) for function in functions)
+        trace.append({"round": 1, "stage": "initial", "added": len(cases), "note": "每个功能点生成正常流程"})
     # Round 2: compare each function against the required negative/boundary coverage.
     before = len(cases)
     for function in functions:
@@ -91,7 +112,9 @@ def generate_cases(analysis: RequirementAnalysis | Mapping[str, Any]) -> CaseGen
     for index, item in enumerate(cases, start=1):
         item["id"] = f"case-{index:03d}"
     types = {kind: sum(item["type"] == kind for item in cases) for kind in ("positive", "negative", "boundary", "linkage")}
-    coverage = {"function_count": len(functions), "case_count": len(cases), "types": types, "covered_function_ids": sorted({str(item["source_function_id"]) for item in cases}), "coverage_rate": round(len({str(item["source_function_id"]) for item in cases}) / len(functions), 4)}
+    coverage = {"function_count": len(functions), "case_count": len(cases), "types": types, "covered_function_ids": sorted({str(item["source_function_id"]) for item in cases}), "coverage_rate": round(len({str(item["source_function_id"]) for item in cases}) / len(functions), 4), "analysis_method": "model_verified" if model_used else "deterministic_baseline"}
+    if model_warning:
+        coverage["model_warning"] = model_warning
     trace.append({"round": 5, "stage": "final_confirmation", "added": 0, "note": "稳定排序并输出覆盖度"})
     return CaseGenerationResult(cases, coverage, trace)
 
@@ -103,7 +126,11 @@ def generate_document_cases(document: RequirementDocument, analysis: Requirement
         raise CaseGenerationError("需求文档尚未完成需求分析。")
     record = CaseGenerationRecord.objects.create(project=document.project, document=document, status=CaseGenerationRecord.Status.GENERATING)
     try:
-        result = generate_cases(source)
+        model_adapter = None
+        model_type = ModelConfig.ModelType.CHAT
+        if ModelConfig.objects.filter(is_active=True, model_type=model_type).exists():
+            model_adapter = CaseGenerationModelAdapter()
+        result = generate_cases(source, model_adapter=model_adapter, evidence=document.parse_evidence, project_name=document.project.name)
         record.rounds = 5
         record.total_cases = len(result.cases)
         record.auto_cases = sum(1 for item in result.cases if item["automatable"])
