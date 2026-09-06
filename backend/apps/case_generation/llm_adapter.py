@@ -35,6 +35,26 @@ class CaseGenerationModelAdapter:
         return {"cases": validated, "coverage_report": dict(payload.get("coverage_report") or {}), "round_trace": payload.get("round_trace") if isinstance(payload.get("round_trace"), list) else []}
 
 
+def _localize_review_text(value: str, *, suggestion: bool = False) -> str:
+    """Return a concise Chinese label for common model review phrases."""
+    text = value.strip()
+    lowered = text.casefold()
+    mappings = (
+        (("garbled", "not understandable", "unreadable"), "需求文本存在乱码或不可理解内容，请补充清晰、完整的需求说明。"),
+        (("steps are generic", "lack specific actions", "lack specific input data"), "测试步骤过于笼统，缺少具体操作和测试数据。"),
+        (("expected result is vague", "expected results are vague", "does not specify exact expected outcomes"), "预期结果描述不明确，无法直接验证实际结果。"),
+        (("lack specificity", "insufficient for automated testing"), "用例描述不够具体，暂不满足可执行和自动化验证要求。"),
+    )
+    for phrases, localized in mappings:
+        if any(phrase in lowered for phrase in phrases):
+            return localized
+    if any(word in lowered for word in ("provide", "detail", "specify")):
+        return "请根据需求补充可执行的操作、输入和预期结果。" if suggestion else "模型发现当前评审记录仍缺少可验证细节。"
+    if text and all(ord(char) < 128 for char in text):
+        return "请结合需求证据核对模型指出的问题。" if not suggestion else "请补充可执行的操作、输入和预期结果。"
+    return text
+
+
 def _validate_review_payload(payload: Mapping[str, Any], case_ids: set[str], evidence_ids: set[str]) -> dict[str, Any]:
     """Validate model review output against the immutable generation scope."""
     issues = payload.get("issues")
@@ -58,14 +78,18 @@ def _validate_review_payload(payload: Mapping[str, Any], case_ids: set[str], evi
         cited = raw.get("evidence_ids", [])
         if not isinstance(cited, list) or not set(map(str, cited)).issubset(evidence_ids):
             raise ModelAnalysisError("模型评审引用了不存在的证据。")
+        localized_description = _localize_review_text(description)
+        localized_suggestion = _localize_review_text(suggestion, suggestion=True)
         normalized_issues.append({
             "id": str(raw.get("id") or f"model-issue-{index}"),
             "code": str(raw.get("code") or "model_review_issue"),
             "case_id": case_id,
             "severity": severity,
             "dimension": str(raw.get("dimension") or "model_review"),
-            "description": description,
-            "suggestion": suggestion,
+            "description": localized_description,
+            "suggestion": localized_suggestion,
+            "model_description": description,
+            "model_suggestion": suggestion,
             "evidence_ids": [str(item) for item in cited],
             "source": "model",
         })

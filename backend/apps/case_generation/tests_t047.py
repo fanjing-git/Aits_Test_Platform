@@ -6,7 +6,7 @@ from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 
 from apps.case_generation.generator import generate_document_cases
-from apps.case_generation.llm_adapter import CaseReviewModelAdapter
+from apps.case_generation.llm_adapter import CaseReviewModelAdapter, _localize_review_text
 from apps.case_generation.models import CaseGenerationRecord
 from apps.case_generation.reviewer import CaseReviewError, review_cases, review_generation_record
 from apps.requirement_analysis.llm_adapter import ModelAnalysisError
@@ -21,7 +21,7 @@ class CaseReviewModelAdapterTests(SimpleTestCase):
     def test_structured_review_is_validated(self) -> None:
         runtime = Mock()
         runtime.generate_structured.return_value = {
-            "issues": [{"id": "issue-1", "case_id": "case-1", "severity": "medium", "description": "缺少边界步骤", "suggestion": "补充最大值场景", "evidence_ids": []}],
+            "issues": [{"id": "issue-1", "case_id": "case-1", "severity": "medium", "description": "Test case steps are generic and lack specific actions and data.", "suggestion": "Detail the steps with concrete actions, inputs, and expected outcomes.", "evidence_ids": []}],
             "corrections": [{"case_id": "case-1", "field": "steps", "value": ["执行边界值"]}],
             "approved": False,
             "summary": "需要补充边界覆盖",
@@ -37,6 +37,10 @@ class CaseReviewModelAdapterTests(SimpleTestCase):
         result = CaseReviewModelAdapter(model_manager=manager, prompt_manager=prompts).review(record=record)
         self.assertFalse(result["approved"])
         self.assertEqual(result["issues"][0]["case_id"], "case-1")
+        self.assertEqual(result["issues"][0]["description"], "测试步骤过于笼统，缺少具体操作和测试数据。")
+        self.assertEqual(result["issues"][0]["suggestion"], "请根据需求补充可执行的操作、输入和预期结果。")
+        self.assertIn("Test case steps", result["issues"][0]["model_description"])
+        self.assertEqual(_localize_review_text("Unexpected model output"), "请结合需求证据核对模型指出的问题。")
 
     def test_unknown_case_reference_is_rejected(self) -> None:
         runtime = Mock()

@@ -3,6 +3,7 @@
 from rest_framework import serializers
 
 from apps.case_generation.models import CaseGenerationRecord
+from apps.case_generation.llm_adapter import _localize_review_text
 from apps.requirement_analysis.models import RequirementDocument
 
 
@@ -11,6 +12,7 @@ class CaseGenerationRecordSerializer(serializers.ModelSerializer):
 
     document_title = serializers.CharField(source="document.title", read_only=True)
     project_name = serializers.CharField(source="project.name", read_only=True)
+    review_report = serializers.SerializerMethodField()
 
     class Meta:
         model = CaseGenerationRecord
@@ -24,6 +26,29 @@ class CaseGenerationRecordSerializer(serializers.ModelSerializer):
             "auto_cases", "manual_cases", "cases", "coverage_report", "review_rounds",
             "review_report", "status", "created_at",
         )
+
+    def get_review_report(self, obj: CaseGenerationRecord) -> dict:
+        """Return review data with legacy model English normalized for display."""
+        report = dict(obj.review_report) if isinstance(obj.review_report, dict) else {}
+        issues = report.get("issues")
+        if not isinstance(issues, list):
+            return report
+        normalized: list[dict] = []
+        for raw in issues:
+            if not isinstance(raw, dict):
+                continue
+            issue = dict(raw)
+            description = str(issue.get("description", "")).strip()
+            suggestion = str(issue.get("suggestion", "")).strip()
+            if description and "model_description" not in issue:
+                issue["model_description"] = description
+            if suggestion and "model_suggestion" not in issue:
+                issue["model_suggestion"] = suggestion
+            issue["description"] = _localize_review_text(description)
+            issue["suggestion"] = _localize_review_text(suggestion, suggestion=True)
+            normalized.append(issue)
+        report["issues"] = normalized
+        return report
 
     def validate_document(self, value: RequirementDocument) -> RequirementDocument:
         """Ensure the selected document is visible to the authenticated user."""

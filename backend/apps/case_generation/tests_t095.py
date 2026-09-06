@@ -52,6 +52,20 @@ class CaseGenerationApiTests(TestCase):
         self.assertEqual(second_select.status_code, status.HTTP_200_OK)
         self.assertEqual(second_select.data["coverage_report"]["automation_selection"], first_select.data["coverage_report"]["automation_selection"])
 
+    def test_legacy_english_review_issues_are_localized_on_read(self) -> None:
+        record = CaseGenerationRecord.objects.create(
+            project=self.project,
+            document=self.document,
+            cases=[{"id": "case-001", "title": "登录", "type": "positive", "steps": ["执行"], "expected_result": "成功"}],
+            review_rounds=5,
+            review_report={"approved": False, "analysis_method": "model_verified", "issues": [{"id": "issue-1", "severity": "medium", "description": "Test case steps are generic and lack specific actions and data.", "suggestion": "Detail the steps with concrete actions, inputs, and expected outcomes."}]},
+        )
+        self.client.force_authenticate(self.owner)
+        response = self.client.get(f"{self.url}{record.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        issue = response.data["review_report"]["issues"][0]
+        self.assertEqual(issue["description"], "测试步骤过于笼统，缺少具体操作和测试数据。")
+
     def test_viewer_reads_but_cannot_mutate_and_outsider_is_hidden(self) -> None:
         self.client.force_authenticate(self.owner)
         self.assertEqual(self.client.post(self.url, {"document": str(self.document.pk)}, format="json").status_code, status.HTTP_201_CREATED)
