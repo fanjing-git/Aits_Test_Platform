@@ -14,3 +14,4 @@ export const approveInstallation = (id) => request.post(`/api/skills/installatio
 export const installSkillInstallation = (id) => request.post(`/api/skills/installations/${id}/install/`)
 export const rollbackInstallation = (id) => request.post(`/api/skills/installations/${id}/rollback/`)
 export const uninstallInstallation = (id) => request.post(`/api/skills/installations/${id}/uninstall/`)
+export const invokeInstallation = (id, permission, input = {}) => request.post(`/api/skills/installations/${id}/invoke/`, { permission, input })

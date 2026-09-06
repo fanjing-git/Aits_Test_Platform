@@ -7,7 +7,7 @@ import binascii
 from django.db.models import Q
 from apps.projects.permissions import is_platform_admin, project_role
 from apps.skills.models import Skill, SkillInstallation, SkillPermissionAudit
-from apps.skills.permissions import SkillAuditPermission, SkillInstallationPermission, SkillPermission
+from apps.skills.permissions import SkillAuditPermission, SkillInstallationPermission, SkillPermission, SkillPermissionError, enforce_skill_permission
 from apps.skills.serializers import SkillInstallationSerializer, SkillPermissionAuditSerializer, SkillSerializer
 from apps.skills.installation import (
     SkillInstallationError,
@@ -150,3 +150,20 @@ class SkillInstallationViewSet(viewsets.ModelViewSet):
     def uninstall(self, request, pk=None):
         """Uninstall an active package while retaining its audit record."""
         return self._transition(request, "uninstall")
+
+    @action(detail=True, methods=("post",))
+    def invoke(self, request, pk=None):
+        """Invoke an installed Skill only after its declared capability is authorized."""
+        installation = self.get_object()
+        permission = request.data.get("permission")
+        payload = request.data.get("input", {})
+        if not isinstance(permission, str) or not permission.strip():
+            return self._failure(SkillPermissionError("permission is required for third-party Skill invocation"))
+        if installation.skill_id is None:
+            return self._failure(SkillInstallationError("installation has no controlled runtime binding"))
+        try:
+            enforce_skill_permission(installation, permission.strip(), actor=request.user, context={"input": payload})
+            result = execute_skill(installation.skill, payload)
+        except (SkillPermissionError, SkillRuntimeError) as exc:
+            return self._failure(exc)
+        return Response({"status": "completed", "result": result})

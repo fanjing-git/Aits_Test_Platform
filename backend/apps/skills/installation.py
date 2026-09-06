@@ -14,7 +14,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.projects.permissions import is_platform_admin
-from apps.skills.models import SkillInstallation
+from apps.skills.models import Skill, SkillInstallation
 from apps.skills.sources import SkillManifest, SkillSourceError
 
 
@@ -153,11 +153,23 @@ def install_verified(installation: SkillInstallation, installer: Any) -> SkillIn
     _require_admin(installer)
     if installation.status != SkillInstallation.Status.VERIFIED or installation.approved_by_id is None:
         raise SkillInstallationError("installation requires verification and administrator approval")
+    manifest = SkillManifest.from_dict(installation.manifest)
+    skill, _ = Skill.objects.get_or_create(
+        project=None,
+        name=manifest.name,
+        version=manifest.version,
+        defaults={
+            "description": manifest.description,
+            "category": Skill.Category.SPECIALIZED,
+            "runtime_key": "configured",
+        },
+    )
+    installation.skill = skill
     installation.status = SkillInstallation.Status.INSTALLED
     installation.installed_by = installer
     installation.installed_at = timezone.now()
     installation.error_message = ""
-    installation.save(update_fields=("status", "installed_by", "installed_at", "error_message", "updated_at"))
+    installation.save(update_fields=("skill", "status", "installed_by", "installed_at", "error_message", "updated_at"))
     return installation
 
 
