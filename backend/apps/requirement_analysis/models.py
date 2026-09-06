@@ -36,6 +36,7 @@ class RequirementDocument(models.Model):
         super().clean()
         if self.source_type == self.SourceType.ONLINE_LINK and not self.source_url: raise ValidationError({"source_url":"在线链接必须提供来源地址。"})
         if self.source_type == self.SourceType.FILE and not self.file_path and not self.content_text: raise ValidationError({"file_path":"文件来源必须提供文件或正文。"})
+        if self.source_type == self.SourceType.SCREENSHOT and not self.file_path and not self.content_text: raise ValidationError({"file_path":"截图来源必须提供图片文件或 OCR 正文。"})
         if self.source_type == self.SourceType.MANUAL and not self.content_text.strip(): raise ValidationError({"content_text":"手工录入内容不能为空。"})
 
 class RequirementAnalysis(models.Model):

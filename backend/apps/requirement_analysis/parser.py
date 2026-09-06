@@ -186,7 +186,7 @@ def parse_requirement_document(document: Any) -> ParsedDocument:
     try:
         if document.source_type == document.SourceType.ONLINE_LINK:
             parsed = parse_online(document.source_url)
-        elif document.source_type == document.SourceType.FILE:
+        elif document.source_type in {document.SourceType.FILE, document.SourceType.SCREENSHOT}:
             parsed = parse_file(document.file_path)
         elif document.source_type == document.SourceType.MANUAL:
             parsed = parse_document_bytes(document.content_text.encode("utf-8"), f"{document.title}.md")
