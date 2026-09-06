@@ -48,3 +48,44 @@ class Skill(models.Model):
         if self.category != self.Category.CUSTOM and self.project_id is not None: raise ValidationError({"project": "内置技能不能绑定项目。"})
         for field in ("triggers", "input_schema", "output_schema"): validate_object(getattr(self, field))
         for field in ("capabilities", "tools", "knowledge"): validate_string_list(getattr(self, field))
+
+
+class SkillInstallation(models.Model):
+    """Auditable record for a verified third-party Skill installation."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        VERIFIED = "verified", "Verified"
+        INSTALLED = "installed", "Installed"
+        FAILED = "failed", "Failed"
+        ROLLED_BACK = "rolled_back", "Rolled back"
+        UNINSTALLED = "uninstalled", "Uninstalled"
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    skill = models.ForeignKey("skills.Skill", null=True, blank=True, on_delete=models.SET_NULL, related_name="installations")
+    source_type = models.CharField("Source type", max_length=20)
+    source_url = models.CharField("Source address", max_length=500)
+    version = models.CharField("Locked version", max_length=30)
+    manifest = models.JSONField("Normalized manifest", default=dict, validators=[validate_object])
+    commit_hash = models.CharField("Commit hash", max_length=128, blank=True)
+    file_hash = models.CharField("File hash", max_length=128, blank=True)
+    status = models.CharField("Installation status", max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True)
+    error_message = models.TextField("Failure reason", blank=True)
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="requested_skill_installations")
+    approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="approved_skill_installations")
+    approved_at = models.DateTimeField(null=True, blank=True)
+    installed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="installed_skill_installations")
+    installed_at = models.DateTimeField(null=True, blank=True)
+    rolled_back_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        """Keep the newest installation attempts easy to inspect."""
+
+        ordering = ("-created_at",)
+        indexes = [models.Index(fields=("source_type", "source_url", "version"), name="skills_install_source_idx")]
+
+    def __str__(self) -> str:
+        """Return a concise audit label."""
+        return f"{self.source_type}:{self.version} ({self.status})"
