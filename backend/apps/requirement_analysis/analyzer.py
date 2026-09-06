@@ -7,6 +7,8 @@ from typing import Any
 
 from django.db import transaction
 
+from apps.configs.models import ModelConfig
+from apps.requirement_analysis.llm_adapter import ModelAnalysisError, RequirementModelAdapter
 from apps.requirement_analysis.models import RequirementAnalysis, RequirementDocument
 
 
@@ -188,7 +190,20 @@ def analyze_requirement_document(document: RequirementDocument) -> RequirementAn
     document.status = RequirementDocument.Status.ANALYZING
     document.save(update_fields=("status",))
     try:
-        result = deep_analyze(document.content_text, title=document.title, source_type=document.source_type, evidence=document.parse_evidence, source_confidence=document.parse_confidence, warnings=document.parse_warnings)
+        evidence = document.parse_evidence if isinstance(document.parse_evidence, list) else []
+        warnings = document.parse_warnings if isinstance(document.parse_warnings, list) else []
+        result: DeepAnalysis
+        required_model_type = ModelConfig.ModelType.VISION if document.source_type == RequirementDocument.SourceType.SCREENSHOT else ModelConfig.ModelType.CHAT
+        if ModelConfig.objects.filter(is_active=True, model_type=required_model_type).exists():
+            try:
+                model_payload = RequirementModelAdapter().analyze(text=document.content_text, evidence=evidence, project_name=document.project.name, task_type="screenshot" if document.source_type == RequirementDocument.SourceType.SCREENSHOT else "requirement_analysis", scene_type="screenshot_analysis" if document.source_type == RequirementDocument.SourceType.SCREENSHOT else "requirement_analysis")
+                coverage = {**(model_payload.get("coverage_report") or {}), "title": document.title, "analysis_method": "model_verified", "source_confidence": document.parse_confidence, "evidence_count": len(evidence), "needs_confirmation": bool(warnings) or document.parse_confidence < 0.75}
+                result = DeepAnalysis(model_payload["modules"], model_payload["functions"], model_payload["linkages"], model_payload["test_points"], coverage)
+            except ModelAnalysisError as exc:
+                warnings = [*warnings, str(exc)]
+                result = deep_analyze(document.content_text, title=document.title, source_type=document.source_type, evidence=evidence, source_confidence=document.parse_confidence, warnings=warnings)
+        else:
+            result = deep_analyze(document.content_text, title=document.title, source_type=document.source_type, evidence=evidence, source_confidence=document.parse_confidence, warnings=warnings)
         analysis = RequirementAnalysis.objects.create(document=document, **result.as_dict())
         document.status = RequirementDocument.Status.ANALYZED
         document.save(update_fields=("status",))
