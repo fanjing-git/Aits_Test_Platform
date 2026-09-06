@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Protocol
@@ -17,7 +18,15 @@ from core.prompts.manager import PromptManager
 class StructuredRuntime(Protocol):
     """Runtime contract for a configured provider."""
 
-    def generate_structured(self, *, prompt: str, text: str, evidence: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]: ...
+    def generate_structured(
+        self,
+        *,
+        prompt: str,
+        text: str,
+        evidence: Sequence[Mapping[str, Any]],
+        image_bytes: bytes | None = None,
+        image_mime_type: str | None = None,
+    ) -> Mapping[str, Any]: ...
 
 
 class ModelAnalysisError(RuntimeError):
@@ -59,7 +68,15 @@ class OpenAICompatibleRuntime:
     def __init__(self, config: ModelConfig) -> None:
         self.config = config
 
-    def generate_structured(self, *, prompt: str, text: str, evidence: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    def generate_structured(
+        self,
+        *,
+        prompt: str,
+        text: str,
+        evidence: Sequence[Mapping[str, Any]],
+        image_bytes: bytes | None = None,
+        image_mime_type: str | None = None,
+    ) -> Mapping[str, Any]:
         """Call a configured provider without logging credentials or source content."""
         base = self.config.api_base_url.strip().rstrip("/")
         if not base:
@@ -72,6 +89,15 @@ class OpenAICompatibleRuntime:
             max_tokens = max(128, min(8192, int(parameters.get("max_tokens", 2048))))
         except (TypeError, ValueError):
             max_tokens = 2048
+        user_payload = json.dumps({"text": text, "evidence": list(evidence)}, ensure_ascii=False)
+        user_content: str | list[dict[str, Any]] = user_payload
+        if image_bytes:
+            encoded = base64.b64encode(image_bytes).decode("ascii")
+            mime_type = image_mime_type or "image/png"
+            user_content = [
+                {"type": "text", "text": user_payload},
+                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}},
+            ]
         body = {
             "model": self.config.model_name,
             "temperature": parameters.get("structured_temperature", 0),
@@ -79,7 +105,7 @@ class OpenAICompatibleRuntime:
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": json.dumps({"text": text, "evidence": list(evidence)}, ensure_ascii=False)},
+                {"role": "user", "content": user_content},
             ],
         }
         # DeepSeek reasoning models can spend the entire output budget in
@@ -123,12 +149,44 @@ class RequirementModelAdapter:
         self.model_manager = model_manager or ModelManager(factory=self.runtime_factory)
         self.prompt_manager = prompt_manager or PromptManager()
 
-    def analyze(self, *, text: str, evidence: Sequence[Mapping[str, Any]], project_name: str | None = None, task_type: str = "requirement_analysis", scene_type: str = PromptConfig.SceneType.REQUIREMENT_ANALYSIS) -> dict[str, Any]:
+    def analyze(
+        self,
+        *,
+        text: str,
+        evidence: Sequence[Mapping[str, Any]],
+        project_name: str | None = None,
+        task_type: str = "requirement_analysis",
+        scene_type: str = PromptConfig.SceneType.REQUIREMENT_ANALYSIS,
+        image_bytes: bytes | None = None,
+        image_mime_type: str | None = None,
+    ) -> dict[str, Any]:
         """Return validated model output or raise a safe, retryable error."""
         evidence_ids = {str(item.get("id")) for item in evidence if item.get("id")}
-        return self.run(text=text, evidence=evidence, project_name=project_name, task_type=task_type, scene_type=scene_type, validator=lambda payload: _validate_payload(payload, evidence_ids, evidence))
+        return self.run(
+            text=text,
+            evidence=evidence,
+            project_name=project_name,
+            task_type=task_type,
+            scene_type=scene_type,
+            image_bytes=image_bytes,
+            image_mime_type=image_mime_type,
+            validator=lambda payload: _validate_payload(payload, evidence_ids, evidence),
+        )
 
-    def run(self, *, text: str, evidence: Sequence[Mapping[str, Any]], project_name: str | None = None, task_type: str = "requirement_analysis", scene_type: str = PromptConfig.SceneType.REQUIREMENT_ANALYSIS, validator: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None, instant_prompt: str | None = None, prompt_override: str | None = None) -> dict[str, Any]:
+    def run(
+        self,
+        *,
+        text: str,
+        evidence: Sequence[Mapping[str, Any]],
+        project_name: str | None = None,
+        task_type: str = "requirement_analysis",
+        scene_type: str = PromptConfig.SceneType.REQUIREMENT_ANALYSIS,
+        validator: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
+        instant_prompt: str | None = None,
+        prompt_override: str | None = None,
+        image_bytes: bytes | None = None,
+        image_mime_type: str | None = None,
+    ) -> dict[str, Any]:
         """Execute a structured runtime and apply a caller-provided validator."""
         evidence_ids = {str(item.get("id")) for item in evidence if item.get("id")}
         instruction = instant_prompt or (
@@ -144,7 +202,13 @@ class RequirementModelAdapter:
         )
         prompt_content = prompt_override.strip() if isinstance(prompt_override, str) and prompt_override.strip() else resolved.content
         def operation(runtime: StructuredRuntime, _config: ModelConfig) -> dict[str, Any]:
-            payload = runtime.generate_structured(prompt=prompt_content, text=text, evidence=evidence)
+            payload = runtime.generate_structured(
+                prompt=prompt_content,
+                text=text,
+                evidence=evidence,
+                image_bytes=image_bytes,
+                image_mime_type=image_mime_type,
+            )
             return validator(payload) if validator else dict(payload)
         try:
             return self.model_manager.execute_with_fallback(task_type, operation, retry_on=(Exception,))

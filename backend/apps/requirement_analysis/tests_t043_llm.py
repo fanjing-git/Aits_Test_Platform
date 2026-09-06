@@ -70,6 +70,19 @@ class RequirementModelAdapterTests(SimpleTestCase):
         body = json.loads(request.data.decode())
         self.assertEqual(body["thinking"], {"type": "disabled"})
 
+    def test_multimodal_payload_includes_image_data_url(self) -> None:
+        config = ModelConfig(provider=ModelConfig.Provider.DEEPSEEK, model_name="vision", api_base_url="https://example.test/v1", parameters={})
+        response = Mock()
+        response.read.return_value = json.dumps({"choices": [{"message": {"content": '{"ok": true}'}}]}).encode()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        with patch("apps.requirement_analysis.llm_adapter.urlopen", return_value=response) as opener:
+            OpenAICompatibleRuntime(config).generate_structured(prompt="JSON", text="OCR", evidence=[], image_bytes=b"png", image_mime_type="image/png")
+        body = json.loads(opener.call_args.args[0].data.decode())
+        content = body["messages"][1]["content"]
+        self.assertEqual(content[0]["type"], "text")
+        self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/png;base64,"))
+
 
 class RequirementModelIntegrationTests(TestCase):
     """Verify an active model uses the adapter while preserving structured output."""

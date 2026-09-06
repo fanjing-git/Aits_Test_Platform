@@ -80,6 +80,19 @@ class RequirementAnalysisApiTests(TestCase):
         with self.assertRaises(ValidationError):
             document.full_clean()
 
+    def test_screenshot_ocr_text_can_be_persisted_and_parsed(self) -> None:
+        self.client.force_authenticate(self.owner)
+        response = self.client.post(
+            self.url,
+            {"project": str(self.project.pk), "title": "截图 OCR", "source_type": "screenshot", "content_text": "背包页面显示材料"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        document_id = response.data["id"]
+        parsed = self.client.post(f"{self.url}{document_id}/parse/")
+        self.assertEqual(parsed.status_code, status.HTTP_200_OK)
+        self.assertEqual(parsed.data["content_text"], "背包页面显示材料")
+
     def test_anonymous_requests_are_unauthorized(self) -> None:
         self.assertEqual(self.client.get(self.url).status_code, status.HTTP_401_UNAUTHORIZED)
 

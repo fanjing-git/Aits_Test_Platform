@@ -67,8 +67,10 @@ class RequirementDocumentSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"source_url": "在线链接必须提供来源地址。"})
         if source_type == RequirementDocument.SourceType.MANUAL and not content:
             raise serializers.ValidationError({"content_text": "手工录入内容不能为空。"})
-        if source_type in {RequirementDocument.SourceType.FILE, RequirementDocument.SourceType.SCREENSHOT} and not upload and not getattr(self.instance, "file_path", ""):
+        if source_type == RequirementDocument.SourceType.FILE and not upload and not getattr(self.instance, "file_path", ""):
             raise serializers.ValidationError({"file": "文件来源必须上传文件。"})
+        if source_type == RequirementDocument.SourceType.SCREENSHOT and not upload and not getattr(self.instance, "file_path", "") and not content:
+            raise serializers.ValidationError({"file": "截图来源必须上传图片或提供 OCR 正文。"})
         if upload:
             suffix = Path(upload.name or "").suffix.casefold()
             allowed = {".txt", ".md", ".markdown", ".pdf", ".docx", ".xlsx", ".json", ".png", ".jpg", ".jpeg", ".webp"}

@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from django.db import transaction
 
 from apps.configs.models import ModelConfig
 from apps.requirement_analysis.llm_adapter import ModelAnalysisError, RequirementModelAdapter
+from apps.requirement_analysis.parser import MAX_DOCUMENT_BYTES
 from apps.requirement_analysis.models import RequirementAnalysis, RequirementDocument
 
 
@@ -40,6 +42,21 @@ class DeepAnalysis:
 _HEADING = re.compile(r"^(?:#{1,6}\s*|(?:\d+[.)]|[一二三四五六七八九十]+[、.])\s*)(.+?)\s*$")
 _ACTOR_TERMS = ("用户", "管理员", "操作员", "客服", "系统", "客户端", "服务端", "user", "admin")
 _DATA_TERMS = re.compile(r"(?i)([a-z][a-z0-9_-]*(?:id|token|code|name)|用户信息|订单|支付|地址|凭证|文件|配置|状态)")
+
+
+def _screenshot_payload(document: RequirementDocument) -> tuple[bytes | None, str | None]:
+    """Read a bounded screenshot for multimodal models without exposing paths."""
+    if document.source_type != RequirementDocument.SourceType.SCREENSHOT or not document.file_path:
+        return None, None
+    path = Path(document.file_path)
+    try:
+        if not path.is_file() or path.stat().st_size > MAX_DOCUMENT_BYTES:
+            return None, None
+        suffix = path.suffix.casefold()
+        mime_type = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}.get(suffix, "image/png")
+        return path.read_bytes(), mime_type
+    except OSError:
+        return None, None
 
 
 def _sentences(text: str) -> list[str]:
@@ -196,7 +213,16 @@ def analyze_requirement_document(document: RequirementDocument) -> RequirementAn
         required_model_type = ModelConfig.ModelType.VISION if document.source_type == RequirementDocument.SourceType.SCREENSHOT else ModelConfig.ModelType.CHAT
         if ModelConfig.objects.filter(is_active=True, model_type=required_model_type).exists():
             try:
-                model_payload = RequirementModelAdapter().analyze(text=document.content_text, evidence=evidence, project_name=document.project.name, task_type="screenshot" if document.source_type == RequirementDocument.SourceType.SCREENSHOT else "requirement_analysis", scene_type="screenshot_analysis" if document.source_type == RequirementDocument.SourceType.SCREENSHOT else "requirement_analysis")
+                image_bytes, image_mime_type = _screenshot_payload(document)
+                model_payload = RequirementModelAdapter().analyze(
+                    text=document.content_text,
+                    evidence=evidence,
+                    project_name=document.project.name,
+                    task_type="screenshot" if document.source_type == RequirementDocument.SourceType.SCREENSHOT else "requirement_analysis",
+                    scene_type="screenshot_analysis" if document.source_type == RequirementDocument.SourceType.SCREENSHOT else "requirement_analysis",
+                    image_bytes=image_bytes,
+                    image_mime_type=image_mime_type,
+                )
                 coverage = {**(model_payload.get("coverage_report") or {}), "title": document.title, "analysis_method": "model_verified", "source_confidence": document.parse_confidence, "evidence_count": len(evidence), "needs_confirmation": bool(warnings) or document.parse_confidence < 0.75}
                 result = DeepAnalysis(model_payload["modules"], model_payload["functions"], model_payload["linkages"], model_payload["test_points"], coverage)
             except ModelAnalysisError as exc:
