@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from apps.skills.models import Skill, SkillPermissionAudit
+from apps.skills.models import Skill, SkillInstallation, SkillPermissionAudit
 
 class SkillSerializer(serializers.ModelSerializer):
     """Serialize Skill definitions without runtime internals."""
@@ -31,3 +31,23 @@ class SkillPermissionAuditSerializer(serializers.ModelSerializer):
         model = SkillPermissionAudit
         fields = ("id", "installation", "installation_source", "permission", "allowed", "reason", "context_keys", "actor", "actor_username", "created_at")
         read_only_fields = fields
+
+
+class SkillInstallationSerializer(serializers.ModelSerializer):
+    """Serialize installation lifecycle data for the governance workbench."""
+
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    requested_by_username = serializers.CharField(source="requested_by.username", read_only=True, allow_null=True)
+    approved_by_username = serializers.CharField(source="approved_by.username", read_only=True, allow_null=True)
+    installed_by_username = serializers.CharField(source="installed_by.username", read_only=True, allow_null=True)
+    permissions = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SkillInstallation
+        fields = ("id", "skill", "source_type", "source_url", "version", "manifest", "permissions", "commit_hash", "file_hash", "status", "status_label", "error_message", "requested_by", "requested_by_username", "approved_by", "approved_by_username", "approved_at", "installed_by", "installed_by_username", "installed_at", "rolled_back_at", "created_at", "updated_at")
+        read_only_fields = fields
+
+    def get_permissions(self, obj):
+        """Return only normalized boolean permissions from the stored manifest."""
+        value = obj.manifest.get("permissions", {}) if isinstance(obj.manifest, dict) else {}
+        return value if isinstance(value, dict) else {}

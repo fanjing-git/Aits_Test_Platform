@@ -37,6 +37,7 @@ async function logout() {
         <RouterLink v-if="isAdmin" to="/workspace/prompts" :class="{ 'is-active': active === 'prompts' }"><i>⌁</i><span>提示词配置</span><small>ADMIN</small></RouterLink>
         <RouterLink v-if="isAdmin" to="/workspace/users" :class="{ 'is-active': active === 'users' }"><i>♙</i><span>用户权限</span><small>ADMIN</small></RouterLink>
         <RouterLink v-if="isAdmin" to="/workspace/skill-audits" :class="{ 'is-active': active === 'skill-audits' }"><i>!</i><span>Skill audits</span><small>ADMIN</small></RouterLink>
+        <RouterLink v-if="isAdmin" to="/workspace/skill-installations" :class="{ 'is-active': active === 'skill-installations' }"><i>+</i><span>Skill installations</span><small>ADMIN</small></RouterLink>
       </nav>
       <button class="sidebar-logout" @click="logout">退出登录</button>
     </aside>

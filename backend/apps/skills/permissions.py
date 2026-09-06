@@ -83,3 +83,11 @@ class SkillAuditPermission(BasePermission):
     def has_permission(self, request, view) -> bool:
         """Require authentication and the platform administrator role."""
         return bool(request.user and request.user.is_authenticated and is_platform_admin(request.user))
+
+
+class SkillInstallationPermission(BasePermission):
+    """Allow only platform administrators to manage third-party installations."""
+
+    def has_permission(self, request, view) -> bool:
+        """Require an authenticated platform administrator for lifecycle APIs."""
+        return bool(request.user and request.user.is_authenticated and is_platform_admin(request.user))
