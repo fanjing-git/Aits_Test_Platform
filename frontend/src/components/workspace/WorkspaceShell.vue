@@ -30,6 +30,7 @@ async function logout() {
         <RouterLink to="/workspace/environments" :class="{ 'is-active': active === 'environments' }"><i>◎</i><span>环境管理</span><small>LIVE</small></RouterLink>
         <RouterLink to="/workspace/knowledge" :class="{ 'is-active': active === 'knowledge' }"><i>▤</i><span>知识库</span><small>LIVE</small></RouterLink>
         <RouterLink to="/workspace/requirements" :class="{ 'is-active': active === 'requirements' }"><i>⌁</i><span>需求分析</span><small>LIVE</small></RouterLink>
+        <RouterLink to="/workspace/case-generation" :class="{ 'is-active': active === 'case-generation' }"><i>▣</i><span>用例生成</span><small>LIVE</small></RouterLink>
         <RouterLink to="/workspace/skills" :class="{ 'is-active': active === 'skills' }"><i>✧</i><span>Skills</span><small>LIVE</small></RouterLink>
         <a><i>✦</i><span>智能体</span><small>待开发</small></a>
         <a><i>⌘</i><span>测试任务</span><small>待开发</small></a>

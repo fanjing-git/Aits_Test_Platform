@@ -1,0 +1,31 @@
+<script setup>
+import { computed, onMounted, ref } from 'vue'
+import WorkspaceShell from '../components/workspace/WorkspaceShell.vue'
+import { listProjects } from '../api/projects'
+import { listRequirementDocuments } from '../api/requirements'
+import { generateCaseRecord, listCaseGenerations, reviewCaseRecord, selectCaseRecord } from '../api/caseGeneration'
+
+const projects = ref([]); const documents = ref([]); const records = ref([]); const selectedProject = ref(''); const selectedRecord = ref(null)
+const loading = ref(true); const busy = ref(false); const error = ref(''); const notice = ref('')
+const selectedDocument = ref('')
+const canWrite = computed(() => ['admin', 'platform_admin', 'owner', 'manager'].includes(projects.value.find(item => item.id === selectedProject.value)?.current_role))
+const analyzedDocuments = computed(() => documents.value.filter(item => item.latest_analysis))
+
+function explain(err, fallback) { if (err.response?.status === 401) return '登录已过期，请重新登录。'; if (err.response?.status === 403) return '当前账号没有执行此操作的权限。'; const data = err.response?.data; if (typeof data?.detail === 'string') return data.detail; const first = data && Object.values(data)[0]; return Array.isArray(first) ? first[0] : (typeof first === 'string' ? first : fallback) }
+async function load() { loading.value = true; error.value = ''; try { projects.value = await listProjects(); if (!selectedProject.value && projects.value.length) selectedProject.value = projects.value[0].id; if (selectedProject.value) { [documents.value, records.value] = await Promise.all([listRequirementDocuments(selectedProject.value), listCaseGenerations(selectedProject.value)]) } else { documents.value = []; records.value = [] }; selectedRecord.value = records.value.find(item => item.id === selectedRecord.value?.id) || records.value[0] || null; if (!selectedDocument.value) selectedDocument.value = analyzedDocuments.value[0]?.id || '' } catch (err) { error.value = explain(err, '用例生成数据加载失败，请重试。') } finally { loading.value = false } }
+async function changeProject() { selectedDocument.value = ''; selectedRecord.value = null; await load() }
+async function run(action, success) { if (!selectedRecord.value && action !== generateCaseRecord) return; busy.value = true; error.value = ''; notice.value = ''; try { const result = action === generateCaseRecord ? await action(selectedDocument.value) : await action(selectedRecord.value.id); notice.value = success; await load(); selectedRecord.value = records.value.find(item => item.id === result.id) || result } catch (err) { error.value = explain(err, '操作失败，请重试。') } finally { busy.value = false } }
+onMounted(load)
+</script>
+
+<template>
+  <WorkspaceShell active="case-generation"><div class="workspace-content case-generation-page">
+    <div class="page-title-row"><div><p class="workspace-eyebrow">CASE GENERATION</p><h1>用例生成</h1><p class="workspace-lead">基于已确认的需求分析生成、评审并筛选测试用例。</p></div></div>
+    <div v-if="notice" class="case-generation-notice" role="status">{{ notice }}</div><div v-if="error" class="case-generation-error" role="alert">{{ error }} <button class="text-action" @click="load">重新加载</button></div>
+    <div class="case-generation-toolbar"><label>项目<select v-model="selectedProject" @change="changeProject"><option v-for="item in projects" :key="item.id" :value="item.id">{{ item.name }}</option></select></label><button class="secondary-action" @click="load">刷新</button></div>
+    <section v-if="loading" class="state-panel"><span class="loading-ring"></span><b>正在加载用例生成数据</b></section>
+    <section v-else class="case-generation-layout"><aside class="case-generation-panel"><div class="case-generation-heading"><h2>生成记录</h2><span>{{ records.length }}</span></div><div v-if="!records.length" class="case-generation-empty">暂无生成记录，请选择已完成分析的需求生成用例。</div><button v-for="item in records" :key="item.id" class="case-generation-record" :class="{ active: item.id === selectedRecord?.id }" @click="selectedRecord = item"><b>{{ item.document_title }}</b><small>{{ item.status }} · {{ item.total_cases }} 条</small></button></aside>
+      <main class="case-generation-panel"><div v-if="!selectedRecord" class="case-generation-empty"><h2>生成测试用例</h2><p>选择已完成需求分析的文档后开始。</p><select v-model="selectedDocument"><option value="">请选择需求文档</option><option v-for="item in analyzedDocuments" :key="item.id" :value="item.id">{{ item.title }} v{{ item.version }}</option></select><button class="primary-action" :disabled="busy || !canWrite || !selectedDocument" @click="run(generateCaseRecord, '五轮用例生成完成')">{{ busy ? '生成中…' : '生成用例' }}</button><p v-if="!analyzedDocuments.length" class="case-generation-hint">当前项目没有已完成需求分析的文档。</p></div><template v-else><div class="case-generation-heading"><div><h2>{{ selectedRecord.document_title }}</h2><small>生成 {{ selectedRecord.rounds }} 轮 · {{ selectedRecord.status }}</small></div><div class="case-generation-actions"><button class="secondary-action" :disabled="busy || !canWrite" @click="run(reviewCaseRecord, '用例评审完成')">评审</button><button class="secondary-action" :disabled="busy || !canWrite" @click="run(selectCaseRecord, '自动化筛选完成')">自动化筛选</button></div></div><div class="case-generation-summary"><span>总用例 {{ selectedRecord.total_cases }}</span><span>自动化 {{ selectedRecord.auto_cases }}</span><span>手工 {{ selectedRecord.manual_cases }}</span><span>覆盖度 {{ Math.round((selectedRecord.coverage_report?.coverage_rate || 0) * 100) }}%</span></div><p v-if="selectedRecord.review_report?.approved === false" class="case-generation-error">评审未通过，请根据问题修正后重新生成。</p><div v-if="!selectedRecord.cases?.length" class="case-generation-empty">当前记录没有可展示的用例。</div><table v-else class="case-generation-table"><thead><tr><th>编号</th><th>标题</th><th>类型</th><th>优先级</th><th>自动化</th><th>预期结果</th></tr></thead><tbody><tr v-for="item in selectedRecord.cases" :key="item.id"><td>{{ item.id }}</td><td>{{ item.title }}</td><td>{{ item.type }}</td><td>{{ item.priority }}</td><td>{{ item.automatable ? '建议自动化' : '建议手工' }}</td><td>{{ item.expected_result }}</td></tr></tbody></table></template></main>
+    </section>
+  </div></WorkspaceShell>
+</template>

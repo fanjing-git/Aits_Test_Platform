@@ -17,4 +17,5 @@ urlpatterns = [
     path("api/", include("apps.knowledge.urls")),
     path("api/", include("apps.skills.urls")),
     path("api/", include("apps.requirement_analysis.urls")),
+    path("api/", include("apps.case_generation.urls")),
 ]
