@@ -4,8 +4,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from django.db import transaction
-
 from apps.case_generation.models import CaseGenerationRecord
 from apps.requirement_analysis.models import RequirementAnalysis, RequirementDocument
 
@@ -98,7 +96,6 @@ def generate_cases(analysis: RequirementAnalysis | Mapping[str, Any]) -> CaseGen
     return CaseGenerationResult(cases, coverage, trace)
 
 
-@transaction.atomic
 def generate_document_cases(document: RequirementDocument, analysis: RequirementAnalysis | None = None) -> CaseGenerationRecord:
     """Persist one five-round generation run for a project requirement document."""
     source = analysis or document.analyses.order_by("-created_at").first()
