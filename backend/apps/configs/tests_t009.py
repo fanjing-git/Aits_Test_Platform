@@ -57,6 +57,13 @@ class ModelManagerTests(TestCase):
         self.assertEqual(manager.get_config("retrieval").name, "embedding-model")
         self.assertEqual(manager.get_config("screenshot").name, "vision-model")
 
+    def test_text_analysis_can_use_default_multimodal_or_vision_model(self) -> None:
+        self.create_config("chat-model", priority=1)
+        self.create_config("qwen-vision", model_type=ModelConfig.ModelType.VISION, is_default=True, priority=50)
+        manager = ModelManager(self.factory)
+        self.assertEqual(manager.get_config("requirement_analysis").name, "qwen-vision")
+        self.assertEqual(manager.get_config("case_gen").name, "qwen-vision")
+
     def test_switch_changes_only_the_matching_model_type(self) -> None:
         self.create_config("primary", priority=1)
         self.create_config("secondary", priority=2)

@@ -102,3 +102,17 @@ class CaseGenerationApiTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.client.force_authenticate(None)
         self.assertEqual(self.client.get(self.url).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_model_options_filter_generation_and_review_capabilities(self) -> None:
+        from apps.configs.models import ModelConfig
+
+        chat = ModelConfig.objects.create(name="case-options-chat", provider=ModelConfig.Provider.CUSTOM, model_name="chat", model_type=ModelConfig.ModelType.CHAT)
+        ModelConfig.objects.create(name="case-options-embedding", provider=ModelConfig.Provider.CUSTOM, model_name="embedding", model_type=ModelConfig.ModelType.EMBEDDING)
+        self.client.force_authenticate(self.owner)
+        generation = self.client.get(f"{self.url}model-options/?feature=case_generation")
+        review = self.client.get(f"{self.url}model-options/?feature=case_review")
+        self.assertEqual(generation.status_code, status.HTTP_200_OK)
+        self.assertEqual(review.status_code, status.HTTP_200_OK)
+        self.assertIn(chat.id, [item["id"] for item in generation.data["models"]])
+        self.assertNotIn("case-options-embedding", [item["name"] for item in generation.data["models"]])
+        self.assertEqual(generation.data["feature_key"], "case_generation")

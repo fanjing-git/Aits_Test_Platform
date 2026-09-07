@@ -6,6 +6,9 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
+from apps.configs.models import ModelConfig, ModelRoutingPolicy
+from apps.configs.routing import ModelRouteError, ModelRouteResolver, required_model_types
+from apps.configs.serializers import SafeModelSummarySerializer
 from apps.projects.permissions import is_platform_admin
 from apps.requirement_analysis.analyzer import RequirementAnalysisError, analyze_requirement_document
 from apps.requirement_analysis.linkages import LinkageAnalysisError, identify_document_linkages
@@ -58,6 +61,55 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
         if not can_manage_requirements(self.request.user, document.project):
             raise PermissionDenied("当前项目角色不能执行需求分析操作。")
 
+    @staticmethod
+    def _preferred_model_name(request, feature_key: str) -> str | None:
+        """Validate an optional per-run model selection against feature capability."""
+        raw_id = request.data.get("model_config_id")
+        if raw_id in (None, "", "null"):
+            return None
+        try:
+            config_id = int(raw_id)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"model_config_id": "模型配置编号无效。"}) from exc
+        config = ModelConfig.objects.filter(pk=config_id, is_active=True).first()
+        if config is None:
+            raise ValidationError({"model_config_id": "模型不存在或已停用，请重新选择。"})
+        if config.model_type not in set(required_model_types(feature_key)):
+            raise ValidationError({"model_config_id": "所选模型不支持该功能所需能力。"})
+        return config.name
+
+    @action(detail=True, methods=("get",), url_path="model-options")
+    def model_options(self, request, pk=None):
+        """Return selectable models and the effective route for one document."""
+        document = self.get_object()
+        feature_key = (
+            ModelRoutingPolicy.FeatureKey.SCREENSHOT_ANALYSIS
+            if document.source_type == RequirementDocument.SourceType.SCREENSHOT
+            else ModelRoutingPolicy.FeatureKey.REQUIREMENT_ANALYSIS
+        )
+        required = required_model_types(feature_key)
+        models = ModelConfig.objects.filter(
+            is_active=True,
+            model_type__in=required,
+        ).order_by("priority", "name")
+        try:
+            route = ModelRouteResolver().resolve(feature_key)
+            effective = route.primary.config if route.primary else None
+            effective_source = route.primary.source if route.primary else ""
+            route_error = ""
+        except ModelRouteError as exc:
+            effective = None
+            effective_source = ""
+            route_error = str(exc)
+        return Response({
+            "feature_key": feature_key,
+            "required_model_types": list(required),
+            "models": SafeModelSummarySerializer(models, many=True).data,
+            "effective_model": SafeModelSummarySerializer(effective).data if effective else None,
+            "effective_source": effective_source,
+            "route_error": route_error,
+        })
+
     @action(detail=True, methods=("post",))
     def parse(self, request, pk=None):
         """Parse the selected source and advance it to the analysis stage."""
@@ -74,8 +126,14 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
         """Persist a new deep analysis result while retaining history."""
         document = self.get_object()
         self._require_manager(document)
+        feature_key = (
+            ModelRoutingPolicy.FeatureKey.SCREENSHOT_ANALYSIS
+            if document.source_type == RequirementDocument.SourceType.SCREENSHOT
+            else ModelRoutingPolicy.FeatureKey.REQUIREMENT_ANALYSIS
+        )
+        preferred_model_name = self._preferred_model_name(request, feature_key)
         try:
-            analyze_requirement_document(document)
+            analyze_requirement_document(document, preferred_model_name=preferred_model_name)
         except RequirementAnalysisError as exc:
             raise ValidationError({"detail": str(exc)}) from exc
         document.refresh_from_db()

@@ -88,9 +88,9 @@ def _module_sections(text: str) -> list[tuple[str, list[str]]]:
 def _relationship(source: str, target: str) -> str:
     """Infer a small, explainable relation label from requirement wording."""
     value = f"{source} {target}"
-    if any(word in value.casefold() for word in ("调用", "依赖", "before", "after", "先", "后")):
+    if any(word in value.casefold() for word in ("调用", "依赖", "关联", "before", "after")):
         return "dependency"
-    if any(word in value.casefold() for word in ("展示", "显示", "页面", "view")):
+    if any(word in value.casefold() for word in ("展示", "显示", "view")):
         return "display"
     if any(word in value.casefold() for word in ("同步", "更新", "共享", "sync")):
         return "data_link"
@@ -155,7 +155,12 @@ def deep_analyze(text: str, *, title: str = "需求文档", source_type: str = "
             })
     linkages: list[dict[str, Any]] = []
     for previous, current in zip(functions, functions[1:]):
-        linkages.append({"from": previous["id"], "to": current["id"], "relationship": _relationship(previous["description"], current["description"]), "evidence": f"{previous['name']} → {current['name']}"})
+        relationship = _relationship(previous["description"], current["description"])
+        if relationship == "sequence":
+            continue
+        if relationship == "display" and previous["module_id"] == current["module_id"]:
+            continue
+        linkages.append({"from": previous["id"], "to": current["id"], "relationship": relationship, "evidence": f"{previous['name']} -> {current['name']}"})
     data_flows: list[dict[str, Any]] = []
     for index, function in enumerate(functions):
         data_items = sorted(set(_DATA_TERMS.findall(function["description"])))
@@ -199,8 +204,11 @@ def deep_analyze(text: str, *, title: str = "需求文档", source_type: str = "
     return DeepAnalysis(modules, functions, linkages, test_points, coverage)
 
 
-@transaction.atomic
-def analyze_requirement_document(document: RequirementDocument) -> RequirementAnalysis:
+def analyze_requirement_document(
+    document: RequirementDocument,
+    *,
+    preferred_model_name: str | None = None,
+) -> RequirementAnalysis:
     """Analyze a parsed document and persist a new immutable result."""
     if not document.content_text.strip():
         raise RequirementAnalysisError("需求文档尚未解析出正文。")
@@ -210,8 +218,13 @@ def analyze_requirement_document(document: RequirementDocument) -> RequirementAn
         evidence = document.parse_evidence if isinstance(document.parse_evidence, list) else []
         warnings = document.parse_warnings if isinstance(document.parse_warnings, list) else []
         result: DeepAnalysis
-        required_model_type = ModelConfig.ModelType.VISION if document.source_type == RequirementDocument.SourceType.SCREENSHOT else ModelConfig.ModelType.CHAT
-        if ModelConfig.objects.filter(is_active=True, model_type=required_model_type).exists():
+        required_model_types = (
+            (ModelConfig.ModelType.VISION, ModelConfig.ModelType.MULTIMODAL)
+            if document.source_type == RequirementDocument.SourceType.SCREENSHOT
+            else (ModelConfig.ModelType.CHAT, ModelConfig.ModelType.MULTIMODAL, ModelConfig.ModelType.VISION)
+        )
+        model_available = ModelConfig.objects.filter(is_active=True, model_type__in=required_model_types).exists()
+        if model_available:
             try:
                 image_bytes, image_mime_type = _screenshot_payload(document)
                 model_payload = RequirementModelAdapter().analyze(
@@ -220,19 +233,22 @@ def analyze_requirement_document(document: RequirementDocument) -> RequirementAn
                     project_name=document.project.name,
                     task_type="screenshot" if document.source_type == RequirementDocument.SourceType.SCREENSHOT else "requirement_analysis",
                     scene_type="screenshot_analysis" if document.source_type == RequirementDocument.SourceType.SCREENSHOT else "requirement_analysis",
+                    preferred_model_name=preferred_model_name,
                     image_bytes=image_bytes,
                     image_mime_type=image_mime_type,
                 )
                 coverage = {**(model_payload.get("coverage_report") or {}), "title": document.title, "analysis_method": "model_verified", "source_confidence": document.parse_confidence, "evidence_count": len(evidence), "needs_confirmation": bool(warnings) or document.parse_confidence < 0.75}
                 result = DeepAnalysis(model_payload["modules"], model_payload["functions"], model_payload["linkages"], model_payload["test_points"], coverage)
             except ModelAnalysisError as exc:
-                warnings = [*warnings, str(exc)]
-                result = deep_analyze(document.content_text, title=document.title, source_type=document.source_type, evidence=evidence, source_confidence=document.parse_confidence, warnings=warnings)
+                raise RequirementAnalysisError(
+                    f"需求分析模型调用失败，未生成确定性替代结果：{exc}"
+                ) from exc
         else:
             result = deep_analyze(document.content_text, title=document.title, source_type=document.source_type, evidence=evidence, source_confidence=document.parse_confidence, warnings=warnings)
-        analysis = RequirementAnalysis.objects.create(document=document, **result.as_dict())
-        document.status = RequirementDocument.Status.ANALYZED
-        document.save(update_fields=("status",))
+        with transaction.atomic():
+            analysis = RequirementAnalysis.objects.create(document=document, **result.as_dict())
+            document.status = RequirementDocument.Status.ANALYZED
+            document.save(update_fields=("status",))
         return analysis
     except RequirementAnalysisError:
         document.status = RequirementDocument.Status.FAILED

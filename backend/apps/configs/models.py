@@ -44,10 +44,20 @@ class ModelConfig(models.Model):
         CHAT = "chat", "对话"
         EMBEDDING = "embedding", "向量"
         VISION = "vision", "视觉"
+        MULTIMODAL = "multimodal", "全模态"
+        IMAGE_GENERATION = "image_generation", "图像生成与编辑"
+        VIDEO = "video", "视频生成"
+        AUDIO = "audio", "音频理解与生成"
+        TTS = "tts", "语音合成"
+        ASR = "asr", "语音识别"
+        REALTIME = "realtime", "实时交互"
+        RERANK = "rerank", "重排序"
+        THREE_D = "three_d", "三维生成"
+        OTHER = "other", "其他 / 待确认能力"
 
     name = models.CharField("配置名称", max_length=100, unique=True)
     provider = models.CharField("提供商", max_length=20, choices=Provider.choices)
-    model_name = models.CharField("模型名称", max_length=100)
+    model_name = models.CharField("模型名称", max_length=200)
     model_type = models.CharField(
         "模型类型",
         max_length=20,
@@ -109,6 +119,76 @@ class ModelConfig(models.Model):
                     {"api_key_encrypted": "API Key must be encrypted before storage."}
                 ) from exc
         super().save(*args, **kwargs)
+
+
+class ModelRoutingPolicy(models.Model):
+    """Persist the platform and feature-level model routing policy."""
+
+    class FeatureKey(models.TextChoices):
+        """Model-consuming features exposed by the product contract."""
+
+        GLOBAL = "global", "平台全局默认"
+        REQUIREMENT_ANALYSIS = "requirement_analysis", "需求深度分析"
+        SCREENSHOT_ANALYSIS = "screenshot_analysis", "截图与视觉分析"
+        CASE_GENERATION = "case_generation", "测试用例生成"
+        CASE_REVIEW = "case_review", "测试用例评审"
+        AGENT_EXECUTION = "agent_execution", "智能体执行"
+        REPORT_GENERATION = "report_generation", "报告生成"
+        KNOWLEDGE_MODEL = "knowledge_model", "知识库模型任务"
+
+    feature_key = models.CharField(
+        "功能标识",
+        max_length=64,
+        choices=FeatureKey.choices,
+        unique=True,
+        db_index=True,
+    )
+    primary_model = models.ForeignKey(
+        ModelConfig,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="primary_route_policies",
+        verbose_name="主模型",
+    )
+    backup_model = models.ForeignKey(
+        ModelConfig,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="backup_route_policies",
+        verbose_name="备用模型",
+    )
+    allow_fallback = models.BooleanField("允许备用切换", default=False)
+    allow_deterministic_baseline = models.BooleanField(
+        "允许确定性基线", default=False
+    )
+    is_active = models.BooleanField("启用", default=True, db_index=True)
+    created_at = models.DateTimeField("创建时间", auto_now_add=True)
+    updated_at = models.DateTimeField("更新时间", auto_now=True)
+
+    class Meta:
+        """Define stable lookup and policy ordering."""
+
+        verbose_name = "模型路由策略"
+        verbose_name_plural = "模型路由策略"
+        ordering = ("feature_key",)
+        indexes = [
+            models.Index(
+                fields=("feature_key", "is_active"),
+                name="config_route_policy_idx",
+            )
+        ]
+
+    def clean(self) -> None:
+        """Reject a policy that points both roles to the same config."""
+        super().clean()
+        if self.primary_model_id and self.primary_model_id == self.backup_model_id:
+            raise ValidationError("主模型和备用模型不能是同一个配置。")
+
+    def __str__(self) -> str:
+        """Return a readable feature policy label."""
+        return self.get_feature_key_display()
 
 
 class ModelUsageRecord(models.Model):

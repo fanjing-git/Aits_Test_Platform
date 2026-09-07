@@ -19,7 +19,8 @@ class RequirementDeepAnalysisTests(TestCase):
 """, title="Account requirements")
         self.assertEqual(len(result.modules), 2)
         self.assertEqual(len(result.functions), 3)
-        self.assertEqual(len(result.linkages), 2)
+        self.assertEqual(len(result.linkages), 1)
+        self.assertNotIn("sequence", {item["relationship"] for item in result.linkages})
         self.assertTrue(result.coverage_report["data_flow_count"] >= 1)
         self.assertIn("用户", result.coverage_report["actors"])
         self.assertEqual({item["type"] for item in result.test_points}, {"positive", "negative", "boundary"})
@@ -33,6 +34,10 @@ class RequirementDeepAnalysisTests(TestCase):
         self.assertEqual(len(result.functions), 1)
         self.assertEqual(len(result.test_points), 7)
         self.assertEqual({item["scenario"] for item in result.test_points}, {"正常流程", "输入校验", "权限拒绝", "依赖失败", "边界值", "重复提交", "状态恢复"})
+
+    def test_unrelated_functions_do_not_become_sequence_linkages(self) -> None:
+        result = deep_analyze("# 闂ㄦ埛\n鍚姩娓告垙\n# 璁剧疆\n璋冩暣闊抽噺")
+        self.assertEqual(result.linkages, [])
 
     def test_screenshot_analysis_adds_honest_visual_baseline(self) -> None:
         result = deep_analyze("OCR text", title="背包截图", source_type=RequirementDocument.SourceType.SCREENSHOT)

@@ -86,3 +86,15 @@ class CaseReviewTests(TestCase):
         result = review_cases(self.record, model_adapter=fake)
         self.assertEqual(result.report["analysis_method"], "model_verified")
         self.assertTrue(any(item.get("source") == "model" for item in result.issues))
+        self.assertEqual(fake.review.call_count, 5)
+
+    def test_configured_model_review_failure_is_not_silent(self) -> None:
+        from apps.configs.models import ModelConfig
+
+        ModelConfig.objects.create(name="review-failing-chat", provider=ModelConfig.Provider.CUSTOM, model_name="fake", model_type=ModelConfig.ModelType.CHAT)
+        fake = Mock()
+        fake.review.side_effect = ModelAnalysisError("provider unavailable")
+        with self.assertRaises(CaseReviewError):
+            review_generation_record(self.record, model_adapter=fake)
+        self.record.refresh_from_db()
+        self.assertEqual(self.record.status, CaseGenerationRecord.Status.FAILED)

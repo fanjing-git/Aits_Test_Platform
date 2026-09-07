@@ -70,6 +70,20 @@ class RequirementModelAdapterTests(SimpleTestCase):
         body = json.loads(request.data.decode())
         self.assertEqual(body["thinking"], {"type": "disabled"})
 
+    def test_qwen_uses_compatible_default_base_and_bearer_key(self) -> None:
+        config = ModelConfig(provider=ModelConfig.Provider.QWEN, model_name="qwen-max", api_base_url="", parameters={})
+        config.api_key_encrypted = "encrypted"
+        response = Mock()
+        response.read.return_value = json.dumps({"choices": [{"message": {"content": '{"ok": true}'}}]}).encode()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        with patch.object(config, "get_api_key", return_value="qwen-test-key"), patch("apps.requirement_analysis.llm_adapter.urlopen", return_value=response) as opener:
+            result = OpenAICompatibleRuntime(config).generate_structured(prompt="JSON", text="text", evidence=[])
+        self.assertEqual(result, {"ok": True})
+        request = opener.call_args.args[0]
+        self.assertIn("dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", request.full_url)
+        self.assertEqual(request.get_header("Authorization"), "Bearer qwen-test-key")
+
     def test_multimodal_payload_includes_image_data_url(self) -> None:
         config = ModelConfig(provider=ModelConfig.Provider.DEEPSEEK, model_name="vision", api_base_url="https://example.test/v1", parameters={})
         response = Mock()

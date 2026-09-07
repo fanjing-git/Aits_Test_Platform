@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterable
 from typing import Any, Protocol, TypeVar
 
 from apps.configs.models import ModelConfig
+from apps.configs.routing import ModelRouteResolver, ResolvedModelRoute
 
 ModelT = TypeVar("ModelT")
 ResultT = TypeVar("ResultT")
@@ -41,6 +42,12 @@ class ModelFallbackExhausted(ModelManagerError):
 class ModelManager:
     """Resolve active model configurations and isolate provider construction."""
 
+    TEXT_ANALYSIS_TYPES = frozenset({
+        ModelConfig.ModelType.CHAT,
+        ModelConfig.ModelType.MULTIMODAL,
+        ModelConfig.ModelType.VISION,
+    })
+
     TASK_MODEL_TYPES = {
         "embedding": ModelConfig.ModelType.EMBEDDING,
         "vectorization": ModelConfig.ModelType.EMBEDDING,
@@ -54,10 +61,61 @@ class ModelManager:
 
     def __init__(self, factory: ModelFactory[Any] | None = None) -> None:
         self._factory = factory
+        self._route_resolver = ModelRouteResolver()
         self._configs: tuple[ModelConfig, ...] = ()
         self._selected_names: dict[str, str] = {}
         self._instances: dict[int, Any] = {}
         self.load()
+
+    def resolve_route(
+        self,
+        feature_key: str,
+        *,
+        task_type: str | None = None,
+        preferred_name: str | None = None,
+        baseline_requested: bool = False,
+    ) -> ResolvedModelRoute:
+        """Resolve the new platform/function route without changing legacy APIs."""
+        return self._route_resolver.resolve(
+            feature_key,
+            task_type=task_type,
+            preferred_name=preferred_name,
+            baseline_requested=baseline_requested,
+        )
+
+    def execute_routed(
+        self,
+        feature_key: str,
+        operation: Callable[[Any, ModelConfig], ResultT],
+        *,
+        task_type: str | None = None,
+        preferred_name: str | None = None,
+        baseline_requested: bool = False,
+        retry_on: tuple[type[Exception], ...] = (Exception,),
+    ) -> ResultT:
+        """Execute a new route and only use a policy-enabled backup model."""
+        route = self.resolve_route(
+            feature_key,
+            task_type=task_type,
+            preferred_name=preferred_name,
+            baseline_requested=baseline_requested,
+        )
+        if not route.candidates:
+            if route.allow_deterministic_baseline and baseline_requested:
+                raise ModelNotFound("已选择确定性基线，但该执行器没有模型运行时。")
+            raise ModelNotFound("未配置支持该功能的模型，请先配置全局或功能模型。")
+
+        attempted: list[str] = []
+        last_error: Exception | None = None
+        for index, candidate in enumerate(route.candidates):
+            if index > 0 and (not route.allow_fallback or not candidate.is_fallback):
+                break
+            attempted.append(candidate.config.name)
+            try:
+                return operation(self._get_or_create(candidate.config), candidate.config)
+            except retry_on as exc:
+                last_error = exc
+        raise ModelFallbackExhausted(attempted) from last_error
 
     def load(self) -> tuple[ModelConfig, ...]:
         """Reload active configurations in deterministic fallback order."""
@@ -95,8 +153,20 @@ class ModelManager:
     ) -> tuple[ModelConfig, ...]:
         """Return eligible configurations, placing an explicit choice first."""
         model_type = self.resolve_model_type(task_type)
-        eligible = [c for c in self._configs if c.model_type == model_type]
+        normalized_task = (task_type or "chat").strip().lower().replace("-", "_")
+        compatible_text_route = normalized_task in {"requirement_analysis", "case_gen", "case_review"}
+        if compatible_text_route:
+            eligible = [c for c in self._configs if c.model_type in self.TEXT_ANALYSIS_TYPES]
+        else:
+            eligible = [c for c in self._configs if c.model_type == model_type]
+        if compatible_text_route:
+            eligible.sort(key=lambda config: (-int(config.is_default), config.priority, config.model_type, config.name))
         selected_name = preferred_name or self._selected_names.get(model_type)
+        if not preferred_name and compatible_text_route and not selected_name:
+            selected_name = next(
+                (self._selected_names.get(candidate_type) for candidate_type in (ModelConfig.ModelType.CHAT, ModelConfig.ModelType.MULTIMODAL, ModelConfig.ModelType.VISION) if self._selected_names.get(candidate_type)),
+                None,
+            )
         if selected_name:
             selected = next((c for c in eligible if c.name == selected_name), None)
             if selected is None:

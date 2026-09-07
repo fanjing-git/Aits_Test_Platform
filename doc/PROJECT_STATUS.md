@@ -1,6 +1,109 @@
 ﻿# AI 智能体测试平台开发状态
 
-更新时间：2026-09-06 21:30（Asia/Shanghai）
+Updated: 2026-09-07 19:05 (Asia/Shanghai)
+
+### TODAY ARCHIVE (2026-09-07)
+
+- Completed scope: MR-04, unified model routing and five-round semantics for intelligent case generation and review.
+- Final status: backend, REST API, frontend entry, model selectors, failure feedback, historical record display and real local API checks are complete. The next session starts at MR-05.
+- Test evidence: case-generation focused 25/25; backend full suite 313/313; Django check passed; migration check reported no changes; Vite production build passed; frontend, backend and health URLs returned HTTP 200.
+- API evidence: anonymous model-options request returned 401; authenticated temporary admin read both case-generation and case-review model options with HTTP 200; temporary account was deleted.
+- Services: local frontend and backend remain available. If backend code does not hot reload, restart using start-dev.cmd.
+- Data/configuration: no new migration, dependency or environment variable; no API key was written or exposed; historical generation records were retained.
+- Git: no commit, tag or remote push was created. The next session must inspect the working-tree diff and must not roll back existing changes.
+- Next startup order: read PROJECT_STATUS, TASKS_V5.0, PRD_V5.0, TECH_ARCH_V5.0, the core contract and startup audit; check both services; confirm MR-04 archive; then begin MR-05 other model-consuming features (agent, report and knowledge model) through the backend to REST to frontend to real API to acceptance loop.
+- Boundary: do not start MR-06 or MR-07 before explicit confirmation, and do not push Git automatically.
+
+### ???????2026-09-07?
+
+- ???????MR-04?????/???????????
+- ??????????REST API??????????????????????????? API ?????????? MR-05??????????
+- ????????????? 25/25????? 313/313?Django check ???`makemigrations --check --dry-run` ?? No changes detected??? Vite ???????`http://127.0.0.1:5173/`?`http://127.0.0.1:8000/`?`http://127.0.0.1:8000/api/health/` ? HTTP 200?
+- ?? API ??????? `/api/case-generation/model-options/` ?? 401??????????`case_generation` ? `case_review` ????????? 200?????????
+- ????????????????????????????????????????????? `start-dev.cmd` ?????
+- ???????????????????????????????????? API Key???????????
+- Git ?????????????????????????????????????????????
+- ?????????????`TASKS_V5.0.md`?`PRD_V5.0.md`?`TECH_ARCH_V5.0.md`????????????????????? MR-04 ????? MR-05?????????????????????????????????????REST?????? API???????????
+- ??????????????????????? MR-06 ??????? MR-07 ?????????? Git?
+
+### MR-03 需求分析与视觉分析模型入口（2026-09-07）
+
+- 已完成：需求文档与截图文档均提供模型选项接口和前端选择入口，默认继承平台全局路由；也支持本次分析临时选择兼容模型，并显示当前生效模型、来源和路由错误。
+- 已完成：需求分析适配器接入统一路由，显式临时模型失败时返回可理解错误；未显式选择时保留历史兼容路径，截图能力按视觉/全模态能力过滤，OCR 证据链仍保持确定性基线。
+- 已完成：补齐空数据、能力不匹配、未配置、401 和服务失败反馈；前端选择值只在本次分析请求提交，不覆盖平台或功能级配置。
+- 第一轮专项：`apps.requirement_analysis` 与 `apps.configs` 109/109；MR-03 专项 3/3；前端模型目录/路由 Node 测试 8/8；Vite 生产构建通过。
+- 第二轮集成：后端全量 308/308、Django check、迁移检查、`git diff --check` 和前端生产构建通过；本地前后端入口及健康接口 HTTP 200。
+- 真实 API 联调：登录后读取需求文档模型选项返回 `requirement_analysis` 和可选模型；匿名请求返回 401；临时联调账号、项目和文档已清理。
+- 兼容边界：本任务只接入需求分析/视觉分析入口；用例生成、评审、智能体、报告和知识模型入口按 MR-04/MR-05 单独迁移，避免跨任务修改。
+- 页面补漏：修复模型选择区和截图识别提示位于 `WorkspaceShell` 外部导致固定侧栏遮挡的问题，现已纳入需求工作区内容流，随工作区边距和响应式布局正常显示。
+- 性能补漏：发现首个需求文档包含 2,814 个测试点，页面原先一次性渲染完整列表导致浏览器主线程阻塞；现改为首屏展示 80 条并按“加载更多”分批追加，完整分析数据仍保留。
+- 数据诊断：该记录的 `coverage_report.analysis_method` 为 `deterministic_evidence_baseline`，并标记“没有可用的需求分析模型”；402 个功能点按确定性基线每个固定生成 7 条，恰好得到 2,814 条，确认不是大模型生成结果。
+- 路由整改：当存在可用需求分析模型但调用失败时，不再静默写入确定性替代结果；分析请求明确失败并将文档置为失败状态，避免把基线结果误当成真实需求分析。无任何兼容模型配置时仍保留历史基线能力并明确标记。
+- 当前配置核验：本地配置存在全局路由和千问视觉模型；一次最小推理探测被当前 Windows 进程网络权限以 `WinError 10013` 拒绝，不能据此判定 Key 无效，需要先恢复本机网络权限后再重新执行模型分析。
+- 本次补漏验证：需求分析与配置专项 113/113、后端全量 309/309、前端模型测试 8/8、Vite 构建和差异检查通过；未修改或删除历史 2,814 条记录，待模型调用恢复后通过“深度分析”重新生成并保留历史版本。
+- 联合场景补漏：确定性基线不再把相邻功能点自动标成 `sequence`；仅保留识别到明确调用/依赖、展示或数据关联的关系，并过滤同一模块内无证据的展示关系。该文档重新按基线计算为 20 个候选联合场景，而非 401 个伪场景；历史 401 条记录保留并在页面标记为历史基线，重新深度分析后更新。
+- 补漏验证更新：需求分析专项 43/43、后端全量 310/310、前端生产构建和差异检查通过。
+- 下一任务：MR-04“用例生成/评审路由与五轮语义”，等待用户确认后开始。
+
+### MR-02 全局与功能路由 REST/API 及配置入口（用户截图验收通过，2026-09-07）
+
+- 已完成：新增管理员路由策略 REST API，提供完整路由矩阵、全局/功能策略 upsert、能力过滤、最终生效模型、来源和错误信息；严格返回安全模型摘要，不暴露 API Key 或加密字段。
+- 已完成：模型配置工作台新增“平台模型路由”区域，支持平台全局默认、功能模型继承全局、备用模型、备用切换和确定性基线开关；展示需求分析、视觉分析、用例生成、评审、智能体、报告和知识库等 8 个路由功能。
+- 已完成：补齐前端 API 封装、路由来源中文化、加载/空数据/服务失败/401/403/字段错误反馈和保存重试路径；未配置或能力不匹配时显示可理解原因。
+- 验收修复：路由卡片改为等高伸展布局，保存按钮统一贴齐卡片底部；保存前显示“保存此大模型”，保存成功后显示绿色“大模型已保存”状态，重新选择模型、备用模型或切换策略后恢复保存动作。
+- 验收修复：路由卡片下拉框改为深色背景、浅色文字和青色边框，避免浏览器默认白底在深色工作台中过度刺眼。
+- 第一轮专项：配置后端 71/71、前端 Node 测试 8/8、Vite 生产构建通过；修正一次错误的目录测试命令后重新执行成功。
+- 第二轮集成：后端全量 305/305、Django check、迁移检查、前端生产构建通过；真实管理员登录→读取 8 项矩阵→保存全局模型→需求分析生效来源验证通过；匿名 API 返回 401，前端入口和后端健康接口 HTTP 200。
+- 验收：用户通过实际工作台截图检查并反馈按钮对齐、保存状态、文案和下拉框样式，修复后确认“好的，继续开发”；当前环境无可用浏览器自动化表面，因此保留自动化表面限制记录，不阻断用户截图验收结论。
+- 下一任务：MR-03“需求分析与视觉分析模型入口”（已完成）。
+
+### MR-01 统一模型路由核心与数据契约（2026-09-07）
+
+- 已完成：新增 `ModelRoutingPolicy` 数据模型，支持平台全局默认、功能级主模型、备用模型、备用切换开关和确定性基线开关；既有 `ModelConfig.is_default` 保留为兼容路径，不追溯性改变历史配置。
+- 已完成：新增统一路由解析服务，固定“本次临时选择 → 功能绑定 → 平台全局 → 旧按类型默认”的兼容优先级，执行能力匹配；显式绑定能力不匹配时安全阻止，不静默切换错误模型。
+- 已完成：新增 `ModelManager.resolve_route` 与 `execute_routed`，只有路由策略明确允许时才尝试备用模型；原有 `candidates`、`execute_with_fallback` 保留，避免影响此前已验收功能，后续 MR-02～MR-05 逐项迁移到新路由入口。
+- 数据库：新增并应用 `configs.0006_modelroutingpolicy` 迁移；未新增第三方依赖、环境变量或明文凭据。
+- 第一轮专项：配置应用 67/67，通过 Django system check、迁移检查；覆盖全局/功能/临时优先级、能力不匹配、备用策略和同模型校验。
+- 第二轮集成：后端全量 302/302、前端生产构建、前后端真实入口与健康接口 HTTP 200；既有 T009、模型配置、需求分析和用例生成测试保持通过。
+- 下一任务：MR-02“全局与功能路由 REST/API 及配置入口”，范围限路由策略 API、能力过滤和模型配置工作台入口。
+
+### T046-L/T095 五轮递进式模型用例生成整改（2026-09-07）
+
+- 用户明确的业务语义：五轮不是把整份需求重复生成五次，而是围绕同一份需求和已完成的深度分析，依次补充主流程、异常/权限、边界/状态、跨模块链路、最终遗漏与回归风险；每轮只返回新增用例，跨轮去重但保留不同场景。
+- 已完成：用例生成适配器现在按 1～5 轮分别调用配置模型，输入包含原需求正文、功能模块、功能点、测试点、联合场景和已有用例；每轮校验来源功能点/联合场景，只接收结构化新增用例。
+- 已完成：修复原第 4 轮按“功能点+类型”粗暴去重导致模型细化场景被压缩的问题，改为按来源、类型、标题、步骤、预期结果和联合场景做语义签名；覆盖报告记录每轮新增数、累计数、模型轮次和降级原因。
+- 已完成：需求分析、用例生成和用例评审可使用 chat/multimodal/vision 文本模型；Qwen 默认兼容地址、供应商鉴权和模型路由已接入，配置 Qwen 视觉/全模态模型时可用于文本需求分析。前端新增五轮明细、降级提示和“重新生成”入口。
+- 第一轮专项：需求模型路由、五轮生成、评审、自动化筛选和 REST 工作台 36/36 通过；新增五轮模型调用和跨轮场景保留测试，Qwen 默认地址测试通过。
+- 第二轮集成：后端全量 295/295、Django system check、迁移检查、前端生产构建通过；重启后的 `5173/`、`8000/` 和健康接口均可访问。真实供应商五轮生成未自动执行，避免在未获明确费用授权时消耗用户模型额度；页面可通过“重新生成”启动真实五轮调用。
+
+### T010/T097 模型配置整改（2026-09-07）
+
+- 用户反馈：供应商切换后模型类型和名称目录不完整，通义千问已配置 Key 无法有效连接测试。
+- 已完成：新增供应商目录协议和能力归一化；选择供应商后展示公开参考目录，填写密钥后通过后端按供应商协议分页同步账号目录；未知能力模型保留为“其他/待确认能力”，不因前端分类猜测而丢失；模型 ID 上限扩展到200字符。
+- 已完成：扩展模型能力类型为全模态、图像生成、视频、音频、语音合成、语音识别、实时交互、重排序、三维生成和其他，并应用 `configs.0005_alter_modelconfig_model_name_and_more` 迁移。
+- 已完成：千问目录使用官方 `/api/v1/models` 分页接口；兼容推理地址和原生目录地址分离，保留地域/业务空间/Coding Plan 地址提示。供应商鉴权分别支持 Bearer、Anthropic `x-api-key`、Google `x-goog-api-key`、Azure `api-key`。
+- 已完成：连接测试拆为“目录连接与模型可见性”和“所选模型实际调用”；实际调用仅在用户明确选择时发起一次短请求，不自动重试，不把目录 HTTP 200 冒充模型调用成功；错误区分密钥、权限、地域、额度、地址、模型未列出、网络和响应格式问题。
+- 已完成：模型配置页面新增目录同步、全量分页、搜索、全部类型显示、未知能力保留、千问地址说明、失败/部分加载反馈、自定义部署名称保存和实际连接测试反馈；修复自定义模型选择器保存 `__custom__` 哨兵值的问题。
+- 第一轮专项：后端模型配置与供应商发现测试 59/59，前端模型目录工具测试 6/6，覆盖分页、去重、取消过期请求、空目录、循环分页、各供应商鉴权、千问原生目录、错误脱敏和实际调用探测。
+- 第二轮集成：后端全量 291/291、Django check、migrate --check、pip check、前端生产构建通过；本地 `5173/`、`8000/`、`8000/api/health/` 均 HTTP 200。此前一次组合命令因在 backend 目录使用了错误的 `.venv` 相对路径，未将该次结果计入；随后已用正确路径重跑并记录以上结果。
+- 本次连接失败复核：用户提供的千问 Key 未写入数据库，仅在临时进程中验证；使用 `https://dashscope.aliyuncs.com/compatible-mode/v1` 与 `qwen-max` 时目录测试和实际调用均成功（实际调用 HTTP 200，`inference_verified=true`）。先前裸域名调用得到 HTTP 404，确认是地址缺少 `/compatible-mode/v1`，不是 Key 无效。
+- 本机故障修复：截图中的 `WinError 10013` 来自占用 8000 端口的旧受限 Django 进程；清理重复自动重载进程后以前台 `--noreload` 进程接管端口，真实本地 HTTP API 的千问实际调用返回 200。服务层新增 `local_network_blocked` 脱敏诊断；专项测试 14/14、后端全量 292/292 通过。
+- 限制：真实供应商成功与否取决于用户 Key、地域/业务空间、账户额度、模型授权和网络；没有有效凭据不能安全地宣称“任何模型连接测试通过”。浏览器工具当前无可用浏览器，本次未完成人工页面点击验收。
+- 下一步：用户可在 `/workspace/models` 选择供应商；填写与供应商地域匹配的 Key 后点击“刷新模型目录”，再选择模型和类型保存；连接测试先选目录测试，需验证真实调用时再显式选择实际调用。
+
+## 最新续接审计与服务恢复（2026-09-07）
+
+- 本节优先于下方历史“下一任务”“待验收”和遗留问题摘要；历史记录保留，不将历史测试视为本次验证。
+- 服务恢复：当前 `.venv` 缺少已锁定的 pypdf 5.9.0、python-docx 1.1.2、Pillow 11.3.0、pytesseract 0.3.13，后端 URL 导入时报 `ModuleNotFoundError: docx`。按现有 requirements.txt 补齐，连带安装 lxml 6.1.3；未修改依赖清单、数据库结构或业务代码。运行 start-dev.cmd 后后台启动未稳定恢复，补用同一虚拟环境、现有开发配置及原 Fernet 密钥启动后端（本次为 --noreload，后续代码改动需重启后端）。
+- 当前访问验证：5173 首页、src/main.js、8000 根接口、8000/api/health/ 以及 5173/api/health/ 均 HTTP 200。浏览器工具无可用浏览器，本次没有完成浏览器页面操作验收。
+- 第一轮：文档加载及需求解析专项 11/11 通过。第二轮：后端全量 278/278、前端生产构建、Django check、migrate --check、pip check 通过。全量和构建证据分别保留在被忽略的 `.runtime/recovery-regression.log`、`.runtime/recovery-frontend-build.log`；PowerShell 将原生 stderr 包装为 NativeCommandError，Django 测试实际退出码为 0 且结果 OK。
+- 已归档结论：2026-09-06 最后归档明确 T047-L、T094、T095、T049、T131 完成代码、REST、前端入口、真实代理及重复操作验证；真实视觉模型语义验收仍待配置视觉模型，不能由 OCR 安全降级测试替代。
+- 已证实的前置遗漏：当前源码未找到 T107 AgentRuntimeAdapter、T108 LlamaIndex RAG 适配、T109 MCP 网关、T110 HITL/checkpoint 实现，对应 core/runtimes、core/rag、core/mcp、core/hitl 目录缺失，Git 提交标题亦未找到对应任务完成记录。T025/T033/T036/T039 已向后推进，存在任务依赖缺口。
+- 架构差异：T039 当前 apps/agents/graph.py 为自写顺序 AgentGraph，未使用 LangGraph StateGraph；T025 当前为 JSON 向量、离线 HashVectorizer 与余弦检索，未达到任务要求的 pgvector/BM25 混合检索。现有测试通过不能证明这些架构要求已交付。
+- 台账差异：任务表统计为 137 个唯一任务编号，T116 重复两行；TASKS 总数 136、旧状态总数 133 及阶段9数量未同步 T047-L。历史摘要中的待验收和旧下一任务需按最后归档统一，T094 表格依赖与依赖图仍有差异。
+- Git：恢复前工作区干净，HEAD 为 512d382；已有 baseline/20260904-pre-batch 及多个附注检查点，最近创建的为 checkpoint/20260906-T131-ui-zh。本次未提交、打标签、推送或回滚；当前不是一次确认五项任务的批次。
+- 建议顺序：服务恢复（已完成）→统一台账并逐项补齐 T107、T108/T025、T109、T110/T039 的依赖与架构缺口→需要开放 API 的能力紧接前端真实联调和验收→重新审计后再恢复 T050。
+- 下一业务任务：暂缓 T050。建议首先确认 T107 统一智能体运行时边界，范围限输入/输出/事件/错误契约、默认单智能体路径和测试，不启用可选多智能体框架。其余补漏逐任务确认，不在本次审计中跨任务实现。
 
 ## 当前进度
 

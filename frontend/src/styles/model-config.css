@@ -13,7 +13,34 @@
 @media (max-width: 900px) { .page-title-row { align-items: start; flex-direction: column; }.model-summary { grid-template-columns: 1fr; }.model-table { min-width: 920px; } }
 @media (max-width: 600px) { .form-row, .usage-grid { grid-template-columns: 1fr; }.modal-backdrop { padding: 10px; }.config-modal { align-self: start; }.model-page { padding-inline: 16px; } }
 
+.routing-panel { margin-top: 18px; }
+.routing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; padding: 18px; }
+.routing-card { display: flex; min-height: 100%; flex-direction: column; align-items: stretch; gap: 12px; padding: 16px; border: 1px solid rgb(102 215 207 / 12%); border-radius: 8px 2px 8px 2px; background: rgb(5 18 30 / 58%); box-sizing: border-box; }
+.routing-card > header { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.routing-card > header b, .routing-card > header small { display: block; }
+.routing-card > header b { color: #dff8f5; font-size: 14px; }
+.routing-card > header small { margin-top: 5px; color: #789196; font-size: 11px; line-height: 1.5; }
+.routing-effective { display: grid; gap: 4px; padding: 10px 12px; border-left: 2px solid #36c7b9; background: rgb(38 190 177 / 8%); }
+.routing-effective small, .routing-effective span { color: #7f999d; font-size: 11px; }
+.routing-effective b { color: #d5f2ee; font-size: 12px; overflow-wrap: anywhere; }
+.routing-effective--error { border-left-color: #e88b8b; background: rgb(208 93 93 / 10%); }
+.routing-card select { width: 100%; min-height: 38px; border: 1px solid rgb(103 211 203 / 24%); border-radius: 4px; color: #dff8f5; background: #081c2c; outline: none; padding: 8px 10px; font: inherit; }
+.routing-card select:focus { border-color: #4acfc3; box-shadow: 0 0 0 3px rgb(74 207 195 / 12%); }
+.routing-card select option { color: #dff8f5; background: #0b1b2a; }
+.routing-switches { display: grid; gap: 8px; }
+.routing-switches label { display: flex; align-items: center; gap: 8px; color: #9bb0b3; font-size: 11px; font-weight: 500; }
+.routing-switches input { width: 15px; height: 15px; }
+.routing-hint { margin: 0; color: #86a6a6; font-size: 11px; line-height: 1.5; }
+.routing-save { width: 100%; margin-top: auto; }
+.routing-save--saved { border-color: rgb(48 205 176 / 45%); color: #82f0d6; background: rgb(28 159 133 / 18%); cursor: default; }
+
 /* Dark cosmic workspace treatment */
+.catalog-note { padding: 12px; border: 1px solid rgb(104 213 205 / 20%); border-radius: 6px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.catalog-note p { margin: 6px 0; }
+.catalog-note a { color: #6fe9dc; }
+.catalog-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.config-form .catalog-checkbox { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+.config-form .catalog-checkbox input { width: 16px; min-height: 16px; }
 .model-page .page-title-row h1 { color: #effffd; text-shadow: 0 0 35px rgb(87 239 226 / 12%); }
 .model-summary article, .model-panel { border-color: rgb(102 222 214 / 12%); border-radius: 11px 2px 11px 2px; background: linear-gradient(145deg, rgb(10 26 40 / 91%), rgb(9 17 31 / 94%)); box-shadow: inset 0 1px rgb(214 255 251 / 3%); }
 .model-summary small, .model-summary span, .panel-heading p { color: #71868e; }.model-summary strong, .panel-heading h2 { color: #e9faf9; }

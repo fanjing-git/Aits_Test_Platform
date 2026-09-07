@@ -12,27 +12,116 @@ from apps.requirement_analysis.llm_adapter import ModelAnalysisError, Requiremen
 
 
 class CaseGenerationModelAdapter:
-    """Reuse the configured structured runtime with case-specific validation."""
+    """Run five incremental model passes over one analyzed requirement."""
+
+    ROUND_INSTRUCTIONS = {
+        1: "只生成需求主流程和验收标准对应的新增用例，覆盖每个核心功能点。",
+        2: "基于已有用例补充异常、权限、输入校验、依赖失败和安全风险场景，只返回新增用例。",
+        3: "基于已有用例补充边界值、状态转换、并发、重复提交、恢复和数据一致性场景，只返回新增用例。",
+        4: "基于模块关系、功能点和联合场景补充跨模块、数据流、接口契约和业务链路遗漏，只返回新增用例。",
+        5: "执行最终覆盖审查，针对仍未覆盖的测试点、风险和回归影响补充最小必要新增用例，只返回新增用例。",
+    }
 
     def __init__(self, **kwargs: Any) -> None:
         self.adapter = RequirementModelAdapter(**kwargs)
 
-    def generate(self, *, functions: Sequence[Mapping[str, Any]], linkages: Sequence[Mapping[str, Any]], evidence: Sequence[Mapping[str, Any]], project_name: str | None = None) -> dict[str, Any]:
-        """Generate validated cases from bounded function and linkage evidence."""
-        payload = self.adapter.run(text=str({"functions": list(functions), "linkages": list(linkages)}), evidence=evidence, project_name=project_name, task_type="case_gen", scene_type=PromptConfig.SceneType.CASE_GEN)
+    @staticmethod
+    def _validate_cases(
+        payload: Mapping[str, Any],
+        function_ids: set[str],
+        linkage_ids: set[str],
+    ) -> dict[str, Any]:
+        """Validate one round while retaining every distinct scenario."""
         cases = payload.get("cases")
         if not isinstance(cases, list) or not cases:
-            raise ModelAnalysisError("模型输出缺少可执行用例。")
-        function_ids = {str(item.get("id")) for item in functions}
+            raise ModelAnalysisError("模型输出缺少本轮新增用例。")
         validated: list[dict[str, Any]] = []
         for item in cases:
             if not isinstance(item, Mapping):
                 raise ModelAnalysisError("模型用例格式无效。")
             source_id = str(item.get("source_function_id", ""))
-            if source_id not in function_ids or item.get("type") not in {"positive", "negative", "boundary", "linkage"} or not item.get("title") or not item.get("steps") or not item.get("expected_result"):
-                raise ModelAnalysisError("模型用例缺少有效来源或必填字段。")
-            validated.append(dict(item))
-        return {"cases": validated, "coverage_report": dict(payload.get("coverage_report") or {}), "round_trace": payload.get("round_trace") if isinstance(payload.get("round_trace"), list) else []}
+            case_type = str(item.get("type", "")).strip()
+            linkage_id = str(item.get("linkage_id", "")).strip()
+            if source_id not in function_ids or case_type not in {"positive", "negative", "boundary", "linkage"}:
+                raise ModelAnalysisError("模型用例缺少有效来源或类型。")
+            if case_type == "linkage" and linkage_id and linkage_id not in linkage_ids:
+                raise ModelAnalysisError("模型用例引用了不存在的联合场景。")
+            if not item.get("title") or not isinstance(item.get("steps"), list) or not item.get("steps") or not item.get("expected_result"):
+                raise ModelAnalysisError("模型用例缺少标题、步骤或预期结果。")
+            normalized = dict(item)
+            normalized["source_function_id"] = source_id
+            normalized["type"] = case_type
+            normalized["steps"] = [str(step).strip() for step in item["steps"] if str(step).strip()]
+            normalized["expected_result"] = str(item["expected_result"]).strip()
+            normalized["title"] = str(item["title"]).strip()
+            normalized["linkage_id"] = linkage_id or None
+            validated.append(normalized)
+        return {
+            "cases": validated,
+            "coverage_report": dict(payload.get("coverage_report") or {}),
+            "round_analysis": dict(payload.get("round_analysis") or {}) if isinstance(payload.get("round_analysis"), Mapping) else {},
+        }
+
+    def generate_round(
+        self,
+        *,
+        round_number: int,
+        document_text: str,
+        modules: Sequence[Mapping[str, Any]],
+        functions: Sequence[Mapping[str, Any]],
+        test_points: Sequence[Mapping[str, Any]],
+        linkages: Sequence[Mapping[str, Any]],
+        existing_cases: Sequence[Mapping[str, Any]],
+        evidence: Sequence[Mapping[str, Any]],
+        project_name: str | None = None,
+        preferred_model_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Call the configured model once for one incremental coverage pass."""
+        if round_number not in self.ROUND_INSTRUCTIONS:
+            raise ModelAnalysisError("用例生成轮次必须在 1 到 5 之间。")
+        scope = {
+            "round": round_number,
+            "document": document_text,
+            "modules": list(modules),
+            "functions": list(functions),
+            "test_points": list(test_points),
+            "linkages": list(linkages),
+            "existing_cases": list(existing_cases),
+        }
+        instruction = (
+            "你正在对同一份需求执行第 %d 轮递进式测试用例分析。%s "
+            "需求分析结果和已有用例是输入上下文；不要重复已有用例，不要把五轮当成五次独立生成。 "
+            "只输出 JSON：{\"round_analysis\":{...},\"cases\":[...],\"coverage_report\":{...}}。round_analysis 必须说明本轮复核的需求风险、已覆盖测试点和仍待覆盖的缺口。每个新增用例必须包含 "
+            "source_function_id、type、title、steps、expected_result、priority、automatable；"
+            "source_function_id 必须来自 functions，linkage_id 必须来自 linkages。"
+        ) % (round_number, self.ROUND_INSTRUCTIONS[round_number])
+        function_ids = {str(item.get("id")) for item in functions}
+        linkage_ids = {str(item.get("id")) for item in linkages}
+        return self.adapter.run(
+            text=json.dumps(scope, ensure_ascii=False),
+            evidence=evidence,
+            project_name=project_name,
+            task_type="case_gen",
+            scene_type=PromptConfig.SceneType.CASE_GEN,
+            instant_prompt=instruction,
+            prompt_override=instruction,
+            validator=lambda payload: self._validate_cases(payload, function_ids, linkage_ids),
+            preferred_model_name=preferred_model_name,
+        )
+
+    def generate(self, *, functions: Sequence[Mapping[str, Any]], linkages: Sequence[Mapping[str, Any]], evidence: Sequence[Mapping[str, Any]], project_name: str | None = None) -> dict[str, Any]:
+        """Keep the original one-pass contract for integrations and tests."""
+        return self.generate_round(
+            round_number=1,
+            document_text="",
+            modules=[],
+            functions=functions,
+            test_points=[],
+            linkages=linkages,
+            existing_cases=[],
+            evidence=evidence,
+            project_name=project_name,
+        )
 
 
 REVIEW_SEVERITY_LABELS = {"high": "高", "medium": "中", "low": "低"}
@@ -119,7 +208,16 @@ class CaseReviewModelAdapter:
     def __init__(self, **kwargs: Any) -> None:
         self.adapter = RequirementModelAdapter(**kwargs)
 
-    def review(self, *, record: CaseGenerationRecord, project_name: str | None = None) -> dict[str, Any]:
+    def review(
+        self,
+        *,
+        record: CaseGenerationRecord,
+        project_name: str | None = None,
+        round_number: int = 1,
+        existing_issues: Sequence[Mapping[str, Any]] = (),
+        existing_corrections: Sequence[Mapping[str, Any]] = (),
+        preferred_model_name: str | None = None,
+    ) -> dict[str, Any]:
         """Review only the cases and requirement belonging to the supplied record."""
         cases = [item for item in record.cases if isinstance(item, Mapping)]
         if not cases:
@@ -127,15 +225,21 @@ class CaseReviewModelAdapter:
         case_ids = {str(item.get("id")) for item in cases if item.get("id")}
         evidence = record.document.parse_evidence if isinstance(record.document.parse_evidence, list) else []
         evidence_ids = {str(item.get("id")) for item in evidence if item.get("id")}
-        bounded = {"requirement": record.document.content_text, "cases": cases}
+        bounded = {
+            "round": round_number,
+            "requirement": record.document.content_text,
+            "cases": cases,
+            "existing_issues": list(existing_issues),
+            "existing_corrections": list(existing_corrections),
+        }
         instruction = (
             "Output ONLY valid JSON, with no Markdown. Required keys: issues, corrections, approved, summary. "
             "issues is an array; each issue has id, code, case_id (empty for requirement-level issues), severity "
             "(high/medium/low), dimension, description, suggestion, and evidence_ids. corrections is an array; "
             "its field must be one of title, steps, expected_result, priority, or type. Use only supplied case IDs "
-            "and evidence IDs; never invent cases. Perform five review rounds: initial, requirement comparison, "
-            "deviation correction, re-review, and final report. approved is true only when no high or medium issue exists."
-        )
+            "and evidence IDs; never invent cases. This is review round %d of five; inspect existing findings and return only new findings or corrections. "
+            "approved is true only when no high or medium issue exists."
+        ) % round_number
         return self.adapter.run(
             text=json.dumps(bounded, ensure_ascii=False),
             evidence=evidence,
@@ -145,6 +249,7 @@ class CaseReviewModelAdapter:
             instant_prompt=instruction,
             prompt_override=instruction,
             validator=lambda payload: _validate_review_payload(payload, case_ids, evidence_ids),
+            preferred_model_name=preferred_model_name,
         )
 
 

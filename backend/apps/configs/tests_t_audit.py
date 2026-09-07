@@ -13,6 +13,10 @@ from core.utils.crypto import MODEL_CONFIG_FERNET_KEY_ENV
 class _Response:
     status = 200
 
+    def read(self, size: int) -> bytes:
+        """Return a provider catalogue containing the requested model."""
+        return b'{"data": [{"id": "deepseek-v4-flash"}]}'
+
     def __enter__(self):
         return self
 

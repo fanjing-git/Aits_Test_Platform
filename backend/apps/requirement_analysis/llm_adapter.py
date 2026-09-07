@@ -10,7 +10,8 @@ from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from apps.configs.models import ModelConfig, PromptConfig
+from apps.configs.models import ModelConfig, ModelRoutingPolicy, PromptConfig
+from apps.configs.services import canonical_base
 from core.llm.manager import ModelFallbackExhausted, ModelManager, ModelNotFound
 from core.prompts.manager import PromptManager
 
@@ -26,6 +27,7 @@ class StructuredRuntime(Protocol):
         evidence: Sequence[Mapping[str, Any]],
         image_bytes: bytes | None = None,
         image_mime_type: str | None = None,
+        preferred_model_name: str | None = None,
     ) -> Mapping[str, Any]: ...
 
 
@@ -78,11 +80,10 @@ class OpenAICompatibleRuntime:
         image_mime_type: str | None = None,
     ) -> Mapping[str, Any]:
         """Call a configured provider without logging credentials or source content."""
-        base = self.config.api_base_url.strip().rstrip("/")
-        if not base:
-            base = {"openai": "https://api.openai.com/v1", "deepseek": "https://api.deepseek.com/v1", "local": "http://127.0.0.1:11434/v1"}.get(self.config.provider, "")
-        if not base:
-            raise ModelAnalysisError("模型未配置 API 基础地址。")
+        try:
+            base = canonical_base(self.config.provider, self.config.api_base_url)
+        except (KeyError, ValueError) as exc:
+            raise ModelAnalysisError("模型未配置有效 API 基础地址。") from exc
         token = self.config.get_api_key() if self.config.api_key_encrypted else ""
         parameters = self.config.parameters if isinstance(self.config.parameters, dict) else {}
         try:
@@ -118,7 +119,17 @@ class OpenAICompatibleRuntime:
                 thinking = {"type": thinking}
             if isinstance(thinking, Mapping):
                 body["thinking"] = dict(thinking)
-        request = Request(f"{base}/chat/completions", data=json.dumps(body, ensure_ascii=False).encode("utf-8"), headers={"Accept": "application/json", "Content-Type": "application/json", **({"Authorization": f"Bearer {token}"} if token else {})}, method="POST")
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        if token:
+            if self.config.provider == "anthropic":
+                headers.update({"x-api-key": token, "anthropic-version": "2023-06-01"})
+            elif self.config.provider == "google":
+                headers["x-goog-api-key"] = token
+            elif self.config.provider == "azure":
+                headers["api-key"] = token
+            else:
+                headers["Authorization"] = f"Bearer {token}"
+        request = Request(f"{base}/chat/completions", data=json.dumps(body, ensure_ascii=False).encode("utf-8"), headers=headers, method="POST")
         try:
             with urlopen(request, timeout=30) as response:
                 raw = json.loads(response.read().decode("utf-8"))
@@ -159,6 +170,7 @@ class RequirementModelAdapter:
         scene_type: str = PromptConfig.SceneType.REQUIREMENT_ANALYSIS,
         image_bytes: bytes | None = None,
         image_mime_type: str | None = None,
+        preferred_model_name: str | None = None,
     ) -> dict[str, Any]:
         """Return validated model output or raise a safe, retryable error."""
         evidence_ids = {str(item.get("id")) for item in evidence if item.get("id")}
@@ -170,6 +182,7 @@ class RequirementModelAdapter:
             scene_type=scene_type,
             image_bytes=image_bytes,
             image_mime_type=image_mime_type,
+            preferred_model_name=preferred_model_name,
             validator=lambda payload: _validate_payload(payload, evidence_ids, evidence),
         )
 
@@ -186,6 +199,7 @@ class RequirementModelAdapter:
         prompt_override: str | None = None,
         image_bytes: bytes | None = None,
         image_mime_type: str | None = None,
+        preferred_model_name: str | None = None,
     ) -> dict[str, Any]:
         """Execute a structured runtime and apply a caller-provided validator."""
         evidence_ids = {str(item.get("id")) for item in evidence if item.get("id")}
@@ -211,6 +225,24 @@ class RequirementModelAdapter:
             )
             return validator(payload) if validator else dict(payload)
         try:
+            feature_key = {
+                "screenshot": ModelRoutingPolicy.FeatureKey.SCREENSHOT_ANALYSIS,
+                "case_gen": ModelRoutingPolicy.FeatureKey.CASE_GENERATION,
+                "case_review": ModelRoutingPolicy.FeatureKey.CASE_REVIEW,
+            }.get(task_type, ModelRoutingPolicy.FeatureKey.REQUIREMENT_ANALYSIS)
+            use_routed_policy = bool(preferred_model_name)
+            if self.model_manager.__class__.__module__ == "core.llm.manager":
+                use_routed_policy = use_routed_policy or ModelRoutingPolicy.objects.filter(
+                    feature_key__in=(ModelRoutingPolicy.FeatureKey.GLOBAL, feature_key),
+                    is_active=True,
+                ).exists()
+            if use_routed_policy:
+                return self.model_manager.execute_routed(
+                    feature_key,
+                    operation,
+                    task_type=task_type,
+                    preferred_name=preferred_model_name,
+                )
             return self.model_manager.execute_with_fallback(task_type, operation, retry_on=(Exception,))
         except (ModelNotFound, ModelFallbackExhausted) as exc:
             raise ModelAnalysisError("没有可用的需求分析模型，已使用确定性基线。") from exc

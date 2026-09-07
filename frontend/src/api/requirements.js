@@ -4,6 +4,7 @@ export const listRequirementDocuments = (project) => request.get('/api/requireme
 export const createRequirementDocument = (payload) => request.post('/api/requirement-documents/', payload, { headers: { 'Content-Type': 'multipart/form-data' } })
 export const deleteRequirementDocument = (id) => request.delete(`/api/requirement-documents/${id}/`)
 export const parseRequirementDocument = (id) => request.post(`/api/requirement-documents/${id}/parse/`)
-export const analyzeRequirementDocument = (id) => request.post(`/api/requirement-documents/${id}/analyze/`)
+export const analyzeRequirementDocument = (id, payload = {}) => request.post(`/api/requirement-documents/${id}/analyze/`, payload)
+export const listRequirementModelOptions = (id) => request.get(`/api/requirement-documents/${id}/model-options/`)
 export const identifyRequirementLinkages = (id) => request.post(`/api/requirement-documents/${id}/linkages/`)
 export const analyzeRequirementScreenshot = (id) => request.post(`/api/requirement-documents/${id}/screenshot-analysis/`)

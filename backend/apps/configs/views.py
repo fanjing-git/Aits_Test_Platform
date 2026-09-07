@@ -1,6 +1,8 @@
 """Administrator-only model configuration REST endpoints."""
 
 from decimal import Decimal
+from dataclasses import asdict
+from django.shortcuts import get_object_or_404
 import re
 
 from django.db import transaction
@@ -11,31 +13,14 @@ from rest_framework.decorators import action
 from rest_framework.request import Request
 from rest_framework.response import Response
 
-from apps.configs.models import ModelConfig, PromptConfig
-from apps.configs.serializers import ModelConfigSerializer, PromptConfigSerializer
-from apps.configs.services import ConnectionTester, ProviderConnectionTester
+from apps.configs.models import ModelConfig, ModelRoutingPolicy, PromptConfig
+from apps.configs.serializers import (ModelConfigSerializer, ModelRoutingPolicySerializer, PromptConfigSerializer, ModelDiscoverySerializer, ConnectionModeSerializer, SafeModelSummarySerializer)
+from apps.configs.catalog import provider_catalog
+from apps.configs.routing import ModelRouteError, ModelRouteResolver, required_model_types
+from apps.configs.services import ConnectionTester, ProviderConnectionTester, ProviderError, discover_models, canonical_base
 from apps.users.permissions import IsAdminRole
 
 
-MODEL_CATALOG = {
-    "openai": {
-        "label": "OpenAI",
-        "types": {
-            "chat": {"label": "对话模型", "models": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-4o-mini"]},
-            "embedding": {"label": "向量模型", "models": ["text-embedding-3-small", "text-embedding-3-large"]},
-            "vision": {"label": "视觉模型", "models": ["gpt-4o", "gpt-4.1"]},
-        },
-    },
-    "anthropic": {"label": "Anthropic", "types": {"chat": {"label": "对话模型", "models": ["claude-sonnet-4-5", "claude-haiku-4-5"]}, "vision": {"label": "视觉模型", "models": ["claude-sonnet-4-5"]}}},
-    "google": {"label": "Google Gemini", "types": {"chat": {"label": "对话模型", "models": ["gemini-2.5-pro", "gemini-2.5-flash"]}, "embedding": {"label": "向量模型", "models": ["text-embedding-005"]}, "vision": {"label": "视觉模型", "models": ["gemini-2.5-pro", "gemini-2.5-flash"]}}},
-    "qwen": {"label": "通义千问", "types": {"chat": {"label": "对话模型", "models": ["qwen-plus", "qwen-max", "qwen-turbo"]}, "embedding": {"label": "向量模型", "models": ["text-embedding-v3"]}, "vision": {"label": "视觉模型", "models": ["qwen-vl-max"]}}},
-    "baidu": {"label": "文心一言", "types": {"chat": {"label": "对话模型", "models": ["ernie-4.5-turbo-32k", "ernie-speed-128k"]}, "embedding": {"label": "向量模型", "models": ["embedding-v1"]}, "vision": {"label": "视觉模型", "models": ["ernie-4.5-turbo-vl"]}}},
-    "deepseek": {"label": "DeepSeek", "types": {"chat": {"label": "对话模型", "models": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v3.2", "deepseek-v3", "deepseek-chat", "deepseek-reasoner", "deepseek-coder"]}, "vision": {"label": "视觉模型", "models": ["deepseek-v4-flash-vision-exp"]}}},
-    "zhipu": {"label": "智谱", "types": {"chat": {"label": "对话模型", "models": ["glm-4.5", "glm-4.5-air"]}, "vision": {"label": "视觉模型", "models": ["glm-4.1v-thinking-flash"]}}},
-    "azure": {"label": "Azure OpenAI", "types": {"chat": {"label": "对话模型", "models": []}, "embedding": {"label": "向量模型", "models": []}, "vision": {"label": "视觉模型", "models": []}}},
-    "custom": {"label": "OpenAI 兼容", "types": {"chat": {"label": "对话模型", "models": []}, "embedding": {"label": "向量模型", "models": []}, "vision": {"label": "视觉模型", "models": []}}},
-    "local": {"label": "Ollama / vLLM", "types": {"chat": {"label": "对话模型", "models": ["llama3.1", "qwen2.5"]}, "embedding": {"label": "向量模型", "models": ["nomic-embed-text"]}, "vision": {"label": "视觉模型", "models": ["llava"]}}},
-}
 
 
 class ModelConfigViewSet(viewsets.ModelViewSet):
@@ -49,26 +34,39 @@ class ModelConfigViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=("get",))
     def catalog(self, request: Request) -> Response:
         """Return safe provider/type/model suggestions for the configuration form."""
-        providers = [
-            {"value": value, "label": item["label"], "types": [
-                {"value": type_value, "label": type_item["label"], "models": type_item["models"]}
-                for type_value, type_item in item["types"].items()
-            ]}
-            for value, item in MODEL_CATALOG.items()
-        ]
-        return Response({"providers": providers})
+        return Response({"providers": provider_catalog()})
+
+    @action(detail=False, methods=("post",))
+    def discover(self, request: Request) -> Response:
+        """Discover a draft model endpoint without persisting or returning secrets."""
+        serializer = ModelDiscoverySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        config = ModelConfig(provider=data["provider"], api_base_url=data["api_base_url"])
+        try:
+            if data.get("api_key"):
+                config.set_api_key(data["api_key"])
+            elif data.get("config_id"):
+                saved = get_object_or_404(self.get_queryset(), pk=data["config_id"])
+                if saved.provider != config.provider or canonical_base(saved.provider, saved.api_base_url) != canonical_base(config.provider, config.api_base_url):
+                    return Response({"api_key": ["地址或供应商已变化，请重新填写密钥后同步。"]}, status=400)
+                config.api_key_encrypted = saved.api_key_encrypted
+            return Response(discover_models(config, data["cursor"]))
+        except ProviderError as exc:
+            return Response({"message": str(exc), "code": exc.code, "complete": False}, status=503)
+        except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+            return Response({"message": "供应商目录响应格式异常。", "code": "invalid_response", "complete": False}, status=503)
 
     @action(detail=True, methods=("post",), url_path="test-connection")
     def test_connection(self, request: Request, pk: str | None = None) -> Response:
         config = self.get_object()
-        result = self.connection_tester.test(config)
+        mode_serializer = ConnectionModeSerializer(data=request.data)
+        mode_serializer.is_valid(raise_exception=True)
+        mode = mode_serializer.validated_data["mode"]
+        result = self.connection_tester.test(config) if mode == "catalog" else self.connection_tester.test(config, mode=mode)
         response_status = status.HTTP_200_OK if result.ok else status.HTTP_503_SERVICE_UNAVAILABLE
         return Response(
-            {
-                "ok": result.ok,
-                "message": result.message,
-                "latency_ms": result.latency_ms,
-            },
+            asdict(result),
             status=response_status,
         )
 
@@ -90,6 +88,84 @@ class ModelConfigViewSet(viewsets.ModelViewSet):
         totals["total_tokens"] = totals["input_tokens"] + totals["output_tokens"]
         totals["cost"] = str(totals["cost"])
         return Response({"model_config_id": config.pk, **totals})
+
+
+class ModelRoutingPolicyViewSet(viewsets.ModelViewSet):
+    """Manage global and feature model route policies for administrators."""
+
+    queryset = ModelRoutingPolicy.objects.select_related("primary_model", "backup_model").all()
+    serializer_class = ModelRoutingPolicySerializer
+    permission_classes = (IsAdminRole,)
+
+    def get_queryset(self):
+        """Return policies in stable feature order."""
+        return self.queryset.order_by("feature_key")
+
+    @action(detail=False, methods=("get",))
+    def matrix(self, request: Request) -> Response:
+        """Return every routable feature, options, and its effective model."""
+        resolver = ModelRouteResolver()
+        policies = {
+            policy.feature_key: policy
+            for policy in self.get_queryset()
+        }
+        rows: list[dict[str, object]] = []
+        for feature_key, feature_label in ModelRoutingPolicy.FeatureKey.choices:
+            policy = policies.get(feature_key)
+            required = required_model_types(feature_key)
+            available_query = ModelConfig.objects.filter(is_active=True)
+            if feature_key != ModelRoutingPolicy.FeatureKey.GLOBAL:
+                available_query = available_query.filter(model_type__in=required)
+            available = SafeModelSummarySerializer(
+                available_query.order_by("priority", "name"), many=True
+            ).data
+            try:
+                route = resolver.resolve(feature_key)
+                effective = route.primary.config if route.primary else None
+                effective_source = route.primary.source if route.primary else ""
+                route_error = ""
+            except ModelRouteError as exc:
+                effective = None
+                effective_source = ""
+                route_error = str(exc)
+            policy_data = self.get_serializer(policy).data if policy else {
+                "id": None,
+                "feature_key": feature_key,
+                "feature_label": feature_label,
+                "primary_model_id": None,
+                "primary_model": None,
+                "backup_model_id": None,
+                "backup_model": None,
+                "allow_fallback": False,
+                "allow_deterministic_baseline": False,
+                "is_active": True,
+            }
+            rows.append({
+                **policy_data,
+                "required_model_types": list(required),
+                "available_models": available,
+                "inherits_global": feature_key != ModelRoutingPolicy.FeatureKey.GLOBAL and not policy_data["primary_model_id"],
+                "effective_model": SafeModelSummarySerializer(effective).data if effective else None,
+                "effective_source": effective_source,
+                "route_error": route_error,
+            })
+        return Response(rows)
+
+    @action(detail=False, methods=("post",))
+    @transaction.atomic
+    def upsert(self, request: Request) -> Response:
+        """Create or update one feature policy without requiring a client-side ID."""
+        feature_key = request.data.get("feature_key")
+        if not feature_key:
+            return Response({"feature_key": ["必须选择功能。"]}, status=status.HTTP_400_BAD_REQUEST)
+        policy = ModelRoutingPolicy.objects.filter(feature_key=feature_key).first()
+        serializer = self.get_serializer(policy, data=request.data, partial=policy is not None)
+        serializer.is_valid(raise_exception=True)
+        saved = serializer.save()
+        return Response(
+            self.get_serializer(saved).data,
+            status=status.HTTP_200_OK if policy else status.HTTP_201_CREATED,
+        )
 
 
 class PromptConfigViewSet(viewsets.ModelViewSet):
