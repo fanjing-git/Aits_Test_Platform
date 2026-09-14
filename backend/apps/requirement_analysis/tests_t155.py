@@ -117,7 +117,7 @@ class RequirementAnalysisT155Tests(TestCase):
         )
 
         with self.assertRaises(ModelAnalysisError) as raised:
-            adapter.analyze(text="鐧诲綍", evidence=[{"id": "evidence-1", "text": "鐧诲綍"}])
+            adapter.analyze(text="登录", evidence=[{"id": "evidence-1", "text": "登录"}])
 
         self.assertEqual(raised.exception.code, "invalid_response")
         self.assertEqual(raised.exception.structured_trace[0]["segment_id"], "segment-0001")
