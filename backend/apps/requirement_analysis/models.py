@@ -31,6 +31,8 @@ class RequirementDocument(models.Model):
     parse_evidence = models.JSONField("解析证据", default=list, validators=[validate_list])
     parse_confidence = models.FloatField("解析置信度", default=0.0, validators=[MinValueValidator(0.0), MaxValueValidator(1.0)])
     parse_warnings = models.JSONField("解析警告", default=list, validators=[validate_list])
+    visual_analysis_report = models.JSONField("视觉分析报告", default=dict, validators=[validate_object])
+    analysis_baseline = models.JSONField("分析稳定性基线", default=dict, validators=[validate_object])
     status = models.CharField("状态", max_length=20, choices=Status.choices, default=Status.UPLOADED, db_index=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="created_requirement_documents", verbose_name="创建者")
     created_at = models.DateTimeField("创建时间", auto_now_add=True)
@@ -45,6 +47,12 @@ class RequirementDocument(models.Model):
 
 class RequirementAnalysis(models.Model):
     """Structured analysis result linked to one requirement document."""
+    class QualityStatus(models.TextChoices):
+        COMPLETE = "complete", "完整"
+        PARTIAL = "partial", "部分完成"
+        NEEDS_REVIEW = "needs_review", "待复核"
+        FAILED = "failed", "失败"
+
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     document = models.ForeignKey(RequirementDocument, on_delete=models.CASCADE, related_name="analyses", verbose_name="需求文档")
     modules = models.JSONField("功能模块", default=list, validators=[validate_list])
@@ -52,6 +60,9 @@ class RequirementAnalysis(models.Model):
     linkages = models.JSONField("联合功能", default=list, validators=[validate_list])
     test_points = models.JSONField("测试点", default=list, validators=[validate_list])
     coverage_report = models.JSONField("覆盖度报告", default=dict, validators=[validate_object])
+    source_fingerprint = models.CharField("源指纹", max_length=64, blank=True, default="", db_index=True)
+    analysis_fingerprint = models.CharField("分析指纹", max_length=64, blank=True, default="", db_index=True)
+    quality_status = models.CharField("完整性状态", max_length=20, choices=QualityStatus.choices, default=QualityStatus.NEEDS_REVIEW, db_index=True)
     created_at = models.DateTimeField("创建时间", auto_now_add=True)
     class Meta:
         verbose_name = "需求分析结果"; verbose_name_plural = "需求分析结果"; ordering = ("-created_at",)

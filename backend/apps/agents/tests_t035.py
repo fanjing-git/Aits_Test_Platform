@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import patch
 from django.test import TestCase
 from apps.agents.planning import plan_node, retrieve_node
@@ -7,10 +8,14 @@ from uuid import uuid4
 
 
 class AgentPlanningTests(TestCase):
+    @patch("apps.agents.planning.EmbeddingPolicyService.prepare")
     @patch("apps.agents.planning.retrieve")
-    def test_retrieve_node_serializes_provenance(self, mocked):
+    def test_retrieve_node_serializes_provenance(self, mocked, prepare):
         mocked.return_value = [RetrievalHit("e1", "kb1", "d1", "登录必须鉴权", 0.9)]
-        state = retrieve_node(new_agent_state("查询登录鉴权", "p", "u"))
+        prepare.return_value = SimpleNamespace(vectorizer=None)
+        state = new_agent_state("查询登录鉴权", "p", "u")
+        state["entities"] = {"knowledge_base_ids": ["kb1"]}
+        state = retrieve_node(state)
         self.assertEqual(state["knowledge_context"][0]["document_id"], "d1")
         self.assertEqual(state["knowledge_context"][0]["score"], 0.9)
 

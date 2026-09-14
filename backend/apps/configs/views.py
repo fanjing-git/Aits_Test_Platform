@@ -2,6 +2,7 @@
 
 from decimal import Decimal
 from dataclasses import asdict
+from django.core.exceptions import ImproperlyConfigured
 from django.shortcuts import get_object_or_404
 import re
 
@@ -13,12 +14,14 @@ from rest_framework.decorators import action
 from rest_framework.request import Request
 from rest_framework.response import Response
 
-from apps.configs.models import ModelConfig, ModelRoutingPolicy, PromptConfig
-from apps.configs.serializers import (ModelConfigSerializer, ModelRoutingPolicySerializer, PromptConfigSerializer, ModelDiscoverySerializer, ConnectionModeSerializer, SafeModelSummarySerializer)
+from apps.configs.models import ModelCallRecord, ModelConfig, ModelRoutingPolicy, PromptConfig
+from apps.configs.contracts import model_call_contract
+from apps.configs.serializers import (ModelCallRecordSerializer, ModelConfigSerializer, ModelRoutingPolicySerializer, PromptConfigSerializer, ModelDiscoverySerializer, ConnectionModeSerializer, SafeModelSummarySerializer)
 from apps.configs.catalog import provider_catalog
 from apps.configs.routing import ModelRouteError, ModelRouteResolver, required_model_types
 from apps.configs.services import ConnectionTester, ProviderConnectionTester, ProviderError, discover_models, canonical_base
 from apps.users.permissions import IsAdminRole
+from core.utils.crypto import SecretDecryptionError
 
 
 
@@ -30,6 +33,19 @@ class ModelConfigViewSet(viewsets.ModelViewSet):
     serializer_class = ModelConfigSerializer
     permission_classes = (IsAdminRole,)
     connection_tester: ConnectionTester = ProviderConnectionTester()
+
+    def handle_exception(self, exc: Exception) -> Response:
+        """Return an actionable 503 when model credential encryption is unavailable."""
+        if isinstance(exc, (ImproperlyConfigured, SecretDecryptionError)):
+            return Response(
+                {
+                    "message": "模型凭据加密服务不可用，请联系管理员检查 MODEL_CONFIG_FERNET_KEY。",
+                    "code": "server_misconfigured",
+                    "complete": False,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return super().handle_exception(exc)
 
     @action(detail=False, methods=("get",))
     def catalog(self, request: Request) -> Response:
@@ -54,6 +70,24 @@ class ModelConfigViewSet(viewsets.ModelViewSet):
             return Response(discover_models(config, data["cursor"]))
         except ProviderError as exc:
             return Response({"message": str(exc), "code": exc.code, "complete": False}, status=503)
+        except ImproperlyConfigured:
+            return Response(
+                {
+                    "message": "模型凭据加密服务不可用，请联系管理员检查 MODEL_CONFIG_FERNET_KEY。",
+                    "code": "server_misconfigured",
+                    "complete": False,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except SecretDecryptionError:
+            return Response(
+                {
+                    "message": "已保存的模型凭据无法解密，请联系管理员检查 MODEL_CONFIG_FERNET_KEY。",
+                    "code": "credential_unavailable",
+                    "complete": False,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         except (ValueError, TypeError, KeyError, IndexError, AttributeError):
             return Response({"message": "供应商目录响应格式异常。", "code": "invalid_response", "complete": False}, status=503)
 
@@ -89,6 +123,29 @@ class ModelConfigViewSet(viewsets.ModelViewSet):
         totals["cost"] = str(totals["cost"])
         return Response({"model_config_id": config.pk, **totals})
 
+    @action(detail=False, methods=("get",), url_path="call-records")
+    def call_records(self, request: Request) -> Response:
+        """Return recent safe call diagnostics for the administrator workbench."""
+        queryset = ModelCallRecord.objects.select_related("model_config").all()
+        model_id = request.query_params.get("model_config_id")
+        feature_key = request.query_params.get("feature_key")
+        status_filter = request.query_params.get("status")
+        request_id = request.query_params.get("request_id")
+        if model_id:
+            queryset = queryset.filter(model_config_id=model_id)
+        if feature_key:
+            queryset = queryset.filter(feature_key=feature_key)
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        if request_id:
+            queryset = queryset.filter(request_id=request_id)
+        try:
+            limit = min(max(int(request.query_params.get("limit", "30")), 1), 100)
+        except ValueError:
+            limit = 30
+        records = queryset.order_by("-created_at", "-pk")[:limit]
+        return Response(ModelCallRecordSerializer(records, many=True).data)
+
 
 class ModelRoutingPolicyViewSet(viewsets.ModelViewSet):
     """Manage global and feature model route policies for administrators."""
@@ -113,6 +170,7 @@ class ModelRoutingPolicyViewSet(viewsets.ModelViewSet):
         for feature_key, feature_label in ModelRoutingPolicy.FeatureKey.choices:
             policy = policies.get(feature_key)
             required = required_model_types(feature_key)
+            capability_contract = model_call_contract(feature_key).as_dict()
             available_query = ModelConfig.objects.filter(is_active=True)
             if feature_key != ModelRoutingPolicy.FeatureKey.GLOBAL:
                 available_query = available_query.filter(model_type__in=required)
@@ -123,11 +181,13 @@ class ModelRoutingPolicyViewSet(viewsets.ModelViewSet):
                 route = resolver.resolve(feature_key)
                 effective = route.primary.config if route.primary else None
                 effective_source = route.primary.source if route.primary else ""
-                route_error = ""
+                route_error = route.failure_reason
+                route_diagnostics = route.as_dict()
             except ModelRouteError as exc:
                 effective = None
                 effective_source = ""
                 route_error = str(exc)
+                route_diagnostics = {"available": False, "failure_reason": route_error}
             policy_data = self.get_serializer(policy).data if policy else {
                 "id": None,
                 "feature_key": feature_key,
@@ -143,11 +203,13 @@ class ModelRoutingPolicyViewSet(viewsets.ModelViewSet):
             rows.append({
                 **policy_data,
                 "required_model_types": list(required),
+                "capability_contract": capability_contract,
                 "available_models": available,
                 "inherits_global": feature_key != ModelRoutingPolicy.FeatureKey.GLOBAL and not policy_data["primary_model_id"],
                 "effective_model": SafeModelSummarySerializer(effective).data if effective else None,
                 "effective_source": effective_source,
                 "route_error": route_error,
+                "route": route_diagnostics,
             })
         return Response(rows)
 

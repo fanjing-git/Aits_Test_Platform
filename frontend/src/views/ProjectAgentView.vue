@@ -28,12 +28,19 @@ const saving = ref(false)
 const formError = ref('')
 const memberChoice = ref('')
 const memberRole = ref('member')
+const executionModal = ref(false)
+const executionAgent = ref(null)
+const executionInput = ref('')
+const execution = ref(null)
+const executionLoading = ref(false)
+const executionError = ref('')
 
 const projectForm = reactive({ name: '', description: '', status: 'active', settingsText: '{}' })
 const agentForm = reactive({ name: '', description: '', agent_type: 'general', model_config_id: '', prompt_config_id: '', knowledgeText: '', skillsText: '', parametersText: '{}', status: 'draft' })
 const selected = computed(() => projects.value.find((item) => item.id === selectedId.value) || null)
 const canEdit = computed(() => ['owner', 'manager', 'platform_admin'].includes(selected.value?.current_role))
 const canDelete = computed(() => ['owner', 'platform_admin'].includes(selected.value?.current_role))
+const canExecute = computed(() => ['owner', 'manager', 'member', 'platform_admin'].includes(selected.value?.current_role))
 const activeAgents = computed(() => agents.value.filter((item) => item.status === 'active').length)
 
 function apiError(err, fallback) {
@@ -187,6 +194,42 @@ async function removeAgent(agent) {
   catch (err) { ElMessage.error(apiError(err, '智能体删除失败。')) }
 }
 
+function executionStatusLabel(status) {
+  return ({ pending: 'Pending', running: 'Running', paused: 'Paused', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled' }[status] || status || 'Unknown')
+}
+
+async function openExecution(agent) {
+  executionAgent.value = agent
+  executionInput.value = ''
+  execution.value = null
+  executionError.value = ''
+  executionModal.value = true
+  try {
+    const data = await agentApi.listAgentExecutions({ agent: agent.id })
+    const items = Array.isArray(data) ? data : (data.results || [])
+    execution.value = items[0] || null
+  } catch (err) { executionError.value = apiError(err, 'Unable to load execution history. Please retry.') }
+}
+
+async function runExecution() {
+  if (!executionInput.value.trim()) { executionError.value = 'Enter an execution request first.'; return }
+  executionLoading.value = true; executionError.value = ''
+  try {
+    execution.value = await agentApi.executeAgent(executionAgent.value.id, { input_text: executionInput.value.trim() })
+  } catch (err) { executionError.value = apiError(err, 'Execution failed. Check the service and retry.') }
+  finally { executionLoading.value = false }
+}
+
+async function controlExecution(action) {
+  if (!execution.value) return
+  executionLoading.value = true; executionError.value = ''
+  try {
+    const actions = { pause: agentApi.pauseAgentExecution, cancel: agentApi.cancelAgentExecution, resume: agentApi.resumeAgentExecution }
+    execution.value = await actions[action](execution.value.id)
+  } catch (err) { executionError.value = apiError(err, 'The execution state could not be changed. Please retry.') }
+  finally { executionLoading.value = false }
+}
+
 onMounted(async () => { await loadProjects(); await loadDetails() })
 </script>
 
@@ -226,7 +269,7 @@ onMounted(async () => { await loadProjects(); await loadDetails() })
               <article v-for="agent in agents" :key="agent.id" class="agent-card">
                 <header><span>{{ agent.agent_type_label }}</span><b>v{{ agent.version }}</b></header><h4>{{ agent.name }}</h4><p>{{ agent.description || '暂无说明' }}</p>
                 <dl><div><dt>状态</dt><dd :class="`status-${agent.status}`">{{ agent.status_label }}</dd></div><div><dt>知识库</dt><dd>{{ agent.knowledge_base_ids.length }}</dd></div><div><dt>技能</dt><dd>{{ agent.skill_ids.length }}</dd></div></dl>
-                <footer><button v-if="canEdit" @click="openAgent(agent)">编辑</button><button @click="openHistory(agent)">版本历史</button><button v-if="canDelete" class="danger" @click="removeAgent(agent)">删除</button></footer>
+                <footer><button v-if="canExecute && agent.status === 'active'" class="execute-action" @click="openExecution(agent)">Execute</button><button v-if="canEdit" @click="openAgent(agent)">编辑</button><button @click="openHistory(agent)">版本历史</button><button v-if="canDelete" class="danger" @click="removeAgent(agent)">删除</button></footer>
               </article>
             </div>
           </section>
@@ -247,5 +290,6 @@ onMounted(async () => { await loadProjects(); await loadDetails() })
     <div v-if="historyModal" class="modal-backdrop"><section class="config-modal history-modal"><header><div><small>IMMUTABLE HISTORY</small><h2>{{ historyTarget?.name }} · 版本历史</h2></div><button @click="historyModal = false">×</button></header><div class="history-list"><article v-for="item in history" :key="item.id"><div><b>v{{ item.version }}</b><span>{{ item.status_label }} · {{ item.agent_type_label }}</span><small>{{ new Date(item.created_at).toLocaleString() }} · {{ item.created_by.username }}</small></div><p>{{ item.description || '暂无说明' }}</p><button v-if="canEdit && item.version !== historyTarget.version" @click="rollback(item.version)">回滚到此版本</button><em v-else-if="item.version === historyTarget.version">当前版本</em></article></div></section></div>
 
     <div v-if="deleteTarget" class="modal-backdrop"><section class="confirm-modal"><span class="danger-mark">!</span><h2>删除项目？</h2><p>“{{ deleteTarget.name }}”及其成员关系、全部智能体版本都会被删除，此操作不可撤销。</p><div><button class="secondary-action" @click="deleteTarget = null">取消</button><button class="danger-action" @click="removeProject">确认删除</button></div></section></div>
+    <div v-if="executionModal" class="modal-backdrop"><section class="config-modal execution-modal"><header><div><small>CONTROLLED MODEL EXECUTION</small><h2>Execute {{ executionAgent?.name }}</h2></div><button @click="executionModal = false">X</button></header><div class="execution-body"><label>Request<textarea v-model="executionInput" rows="5" placeholder="Describe what the agent should do."></textarea></label><div v-if="executionError" class="form-error">{{ executionError }}</div><div v-if="executionLoading" class="state-panel compact"><span class="loading-ring"></span><b>Waiting for execution state</b></div><div v-else-if="execution" class="execution-summary"><div><span>Status</span><b :class="`execution-status-${execution.status}`">{{ executionStatusLabel(execution.status) }}</b></div><div><span>Phase</span><b>{{ execution.phase || '—' }}</b></div><div><span>Route</span><b>{{ execution.model_route?.effective_source || 'unresolved' }}</b></div></div><div v-if="execution?.result && Object.keys(execution.result).length" class="execution-result"><h3>Result</h3><pre>{{ JSON.stringify(execution.result, null, 2) }}</pre></div><div v-if="execution?.error_message" class="execution-error"><b>Execution failed</b><p>{{ execution.error_message }}</p><small v-if="execution.retryable">This failure can be retried.</small></div><div v-if="execution?.trace?.length" class="execution-trace"><h3>Audit trace</h3><ol><li v-for="(event, index) in execution.trace" :key="`${event.at}-${index}`"><span>{{ event.stage }}</span><b>{{ event.status }}</b></li></ol></div></div><footer><button class="secondary-action" @click="executionModal = false">Close</button><button v-if="execution?.status === 'paused'" class="secondary-action" :disabled="executionLoading" @click="controlExecution('resume')">Resume</button><button v-if="execution?.status === 'pending' || execution?.status === 'running'" class="secondary-action" :disabled="executionLoading" @click="controlExecution('pause')">Pause</button><button v-if="execution?.status === 'pending' || execution?.status === 'running'" class="danger-action" :disabled="executionLoading" @click="controlExecution('cancel')">Cancel</button><button class="primary-action" :disabled="executionLoading || executionAgent?.status !== 'active'" @click="runExecution">Run</button></footer></section></div>
   </WorkspaceShell>
 </template>

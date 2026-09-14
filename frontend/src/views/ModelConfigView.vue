@@ -14,9 +14,11 @@ import {
   upsertRoutingPolicy,
   updateModelConfig,
 } from '../api/models'
+import { listModelCallRecords } from '../api/modelCalls'
 import WorkspaceShell from '../components/workspace/WorkspaceShell.vue'
 import { loadAllModelPages, resolveModelName } from '../utils/modelCatalog'
-import { routeSourceLabel, routingPayload } from '../utils/modelRouting'
+import { capabilityContractLabel, routeSourceLabel, routingPayload } from '../utils/modelRouting'
+import { connectionFailure, connectionStageLabel } from '../utils/modelConnection'
 
 const typeLabels = { chat: '文本对话与推理', embedding: '向量', vision: '图像 / 视频理解', multimodal: '全模态', image_generation: '图像生成与编辑', video: '视频生成', audio: '音频理解与生成', tts: '语音合成', asr: '语音识别', realtime: '实时交互', rerank: '重排序', three_d: '三维生成', other: '其他 / 待确认能力' }
 
@@ -25,10 +27,12 @@ const loading = ref(true)
 const loadError = ref('')
 const saving = ref(false)
 const testingId = ref(null)
+const togglingId = ref(null)
 const showForm = ref(false)
 const editingId = ref(null)
 const formError = ref('')
 const deleteTarget = ref(null)
+const activeTarget = ref(null)
 const usage = ref(null)
 const usageModel = ref(null)
 const usageLoading = ref(false)
@@ -39,6 +43,7 @@ const catalogError = ref('')
 const discoveryLoading = ref(false)
 const discoveryError = ref('')
 const discoveryMessage = ref('')
+const discoveryMeta = ref(null)
 const liveModels = ref(null)
 const modelSearch = ref('')
 const showAllModels = ref(true)
@@ -46,12 +51,36 @@ const credentialConfigId = ref(null)
 const testTarget = ref(null)
 const testMode = ref('catalog')
 const testResult = ref(null)
+const testModes = reactive(loadTestModes())
 const routingMatrix = ref([])
 const routingLoading = ref(true)
 const routingError = ref('')
 const routingSaving = ref('')
 const routingSaved = reactive({})
+const callRecords = ref([])
+const callRecordsLoading = ref(true)
+const callRecordsError = ref('')
 let discoveryEpoch = 0
+
+function loadTestModes() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem('aits_model_connection_test_modes') || '{}')
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(Object.entries(parsed).filter(([, value]) => value === 'catalog' || value === 'inference'))
+  } catch {
+    return {}
+  }
+}
+
+function rememberTestMode(modelId, mode) {
+  if (!modelId || !['catalog', 'inference'].includes(mode)) return
+  testModes[String(modelId)] = mode
+  try {
+    localStorage.setItem('aits_model_connection_test_modes', JSON.stringify(testModes))
+  } catch {
+    // A blocked browser storage should not prevent the connection test.
+  }
+}
 
 const form = reactive(defaultForm())
 const activeCount = computed(() => models.value.filter((item) => item.is_active).length)
@@ -66,6 +95,7 @@ const availableTypes = computed(() => {
   return [...result.values()]
 })
 const providerModels = computed(() => liveModels.value ?? selectedProvider.value?.models ?? [])
+const catalogStatus = computed(() => discoveryMeta.value || selectedProvider.value || null)
 const suggestedModels = computed(() => providerModels.value.filter((item) =>
   (showAllModels.value || item.types.includes(form.model_type) || item.types.includes('other'))
   && `${item.id} ${item.label}`.toLowerCase().includes(modelSearch.value.trim().toLowerCase())))
@@ -118,6 +148,7 @@ function resetDiscovery() {
   liveModels.value = null
   discoveryError.value = ''
   discoveryMessage.value = ''
+  discoveryMeta.value = null
   modelSearch.value = ''
   showAllModels.value = true
 }
@@ -148,10 +179,13 @@ async function syncModels() {
   liveModels.value = []
   let loadedCount = 0
   try {
-    await loadAllModelPages(discoverModels, payload, (items, hasNext) => {
+    await loadAllModelPages(discoverModels, payload, (items, hasNext, page) => {
       liveModels.value = items
+      discoveryMeta.value = page
       loadedCount = items.length
-      discoveryMessage.value = `已加载 ${loadedCount} 个模型${hasNext ? '，正在读取下一页…' : '，目录同步完成。'}`
+      discoveryMessage.value = page.directory_state === 'manual_only'
+        ? '该 Provider 不生成虚假官网列表，请手工填写模型 ID 或部署名称。'
+        : `已加载 ${loadedCount} 个模型${hasNext ? '，正在读取下一页…' : '，目录同步完成。'}`
     }, () => epoch === discoveryEpoch && showForm.value)
   } catch (error) {
     if (epoch !== discoveryEpoch) return
@@ -186,6 +220,40 @@ function apiError(error, fallback) {
 
 function providerLabel(value) {
   return catalog.value.find((item) => item.value === value)?.label || value
+}
+
+function protocolLabel(value) {
+  const labels = {
+    openai_compatible: 'OpenAI-compatible',
+    azure_openai_compatible: 'Azure OpenAI-compatible',
+    openai_compatible_manual: '手工 OpenAI-compatible',
+    openai_compatible_local: '本地 OpenAI-compatible',
+    anthropic_messages: 'Anthropic Messages',
+    google_gemini: 'Google Gemini',
+    baidu_chat_completions: '百度千帆 Chat Completions',
+    zhipu_chat_completions: '智谱 Chat Completions',
+  }
+  return labels[value] || value || '未声明协议'
+}
+
+function catalogSourceLabel(value) {
+  return { reference_snapshot: '官方参考快照', provider_directory: '供应商实时目录', manual_only: '手工模型入口', provider: '供应商目录' }[value] || value || '未确认'
+}
+
+function catalogStateLabel(value) {
+  return { reference_only: '仅供参考', available: '目录可用', manual_only: '无可靠目录', unavailable: '目录不可用' }[value] || value || '未检查'
+}
+
+function accountStateLabel(value) {
+  return { catalog_accessible: 'Key 可访问目录', verified: '已由调用验证', denied: '账号无权访问', unknown: '未确认', not_checked: '未检查' }[value] || value || '未检查'
+}
+
+function modelStateLabel(value) {
+  return { listed: '目录已列出', not_listed: '目录未列出', callable: '实际可调用', manual_required: '需手工填写', unknown: '未确认' }[value] || value || '未检查'
+}
+
+function callStateLabel(value) {
+  return { callable: '已实际调用', not_checked: '尚未实际调用', failed: '调用失败' }[value] || value || '未检查'
 }
 
 async function loadModels() {
@@ -268,7 +336,7 @@ async function saveModel() {
 
 function openConnectionTest(model) {
   testTarget.value = model
-  testMode.value = 'catalog'
+  testMode.value = testModes[String(model.id)] || 'catalog'
   testResult.value = null
 }
 
@@ -283,6 +351,95 @@ async function loadRoutingMatrix() {
   } finally {
     routingLoading.value = false
   }
+}
+
+async function loadCallRecords() {
+  callRecordsLoading.value = true
+  callRecordsError.value = ''
+  try {
+    callRecords.value = await listModelCallRecords({ limit: 30 })
+  } catch (error) {
+    callRecordsError.value = apiError(error, 'Call diagnostics are temporarily unavailable.')
+  } finally {
+    callRecordsLoading.value = false
+  }
+}
+
+function callStatusClass(status) {
+  return status === 'completed' ? 'is-online' : ['failed', 'blocked'].includes(status) ? 'is-offline' : ''
+}
+
+function callStatusLabel(status) {
+  return {
+    started: '进行中',
+    completed: '已完成',
+    failed: '失败',
+    blocked: '已阻断',
+  }[status] || status || '未知'
+}
+
+function callFeatureLabel(value) {
+  return {
+    chat: '文本对话',
+    requirement_analysis: '需求分析',
+    case_generation: '用例生成',
+    case_review: '用例评审',
+    agent_execution: '智能体执行',
+    knowledge_model: '知识库模型',
+    diagnostic: '诊断验收',
+    t159_browser_acceptance: 'T159 浏览器验收',
+  }[value] || value || '未知功能'
+}
+
+function callTypeLabel(value) {
+  return {
+    chat: '文本对话',
+    multimodal: '全模态',
+    vision: '视觉理解',
+    embedding: '向量 Embedding',
+  }[value] || value || '能力未识别'
+}
+
+function callSourceLabel(value) {
+  return {
+    feature: '功能路由',
+    global: '平台全局路由',
+    operation: '本次指定',
+    backup: '备用路由',
+    legacy_fallback: '兼容回退',
+    browser_fixture: '浏览器验收样本',
+  }[value] || value || '未记录'
+}
+
+function callCostStatusLabel(value) {
+  return {
+    not_reported: '费用未上报',
+    estimated: '费用为估算值',
+    reported: '费用已上报',
+  }[value] || value || '费用状态未知'
+}
+
+function callCostHint(value) {
+  return {
+    'Runtime did not report token cost.': '运行时未上报 Token 费用。',
+    'Browser acceptance fixture; no provider call.': '浏览器验收样本；未调用供应商。',
+    'No provider call was made; no cost was incurred.': '未发起供应商调用；未产生费用。',
+    'Cost is unknown; no usage report was received.': '未收到用量报告，费用未知。',
+  }[value] || value || '暂无费用说明'
+}
+
+function callTraceLabel(item) {
+  const stages = { preflight: '调用前检查', model_call: '模型调用', route_resolution: '路由解析', runtime: '运行时' }
+  const events = { route_resolved: '路由已解析', completed: '调用完成', failed: '调用失败', blocked: '调用已阻断' }
+  return `${stages[item?.stage] || item?.stage || '未知阶段'}：${events[item?.event] || item?.event || '未知事件'}`
+}
+
+function callFailureStageLabel(value) {
+  return {
+    route_resolution: '路由解析',
+    runtime: '运行时',
+    preflight: '调用前检查',
+  }[value] || value || '未知阶段'
 }
 
 async function saveRouting(row) {
@@ -320,12 +477,13 @@ function modelTypeLabel(type) {
 async function testConnection() {
   const model = testTarget.value
   if (!model || testingId.value) return
+  rememberTestMode(model.id, testMode.value)
   testingId.value = model.id
   testResult.value = null
   try {
     testResult.value = await testModelConnection(model.id, testMode.value)
   } catch (error) {
-    testResult.value = { ok: false, message: apiError(error, '连接测试失败，请检查地址、凭据和网络后重试。') }
+    testResult.value = connectionFailure(error)
   } finally {
     testingId.value = null
   }
@@ -345,6 +503,29 @@ async function showUsage(model) {
   }
 }
 
+function requestToggleModel(model) {
+  if (model.is_active) {
+    activeTarget.value = model
+    return
+  }
+  toggleModelActive(model)
+}
+
+async function toggleModelActive(model) {
+  if (!model || togglingId.value !== null) return
+  togglingId.value = model.id
+  try {
+    await updateModelConfig(model.id, { is_active: !model.is_active })
+    ElMessage.success(model.is_active ? '模型已停用，关联路由将重新计算' : '模型已启用，可参与任务路由')
+    activeTarget.value = null
+    await Promise.all([loadModels(), loadRoutingMatrix()])
+  } catch (error) {
+    ElMessage.error(apiError(error, model.is_active ? '停用模型失败，请重试。' : '启用模型失败，请重试。'))
+  } finally {
+    togglingId.value = null
+  }
+}
+
 async function confirmDelete() {
   const model = deleteTarget.value
   if (!model) return
@@ -359,7 +540,7 @@ async function confirmDelete() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadModels(), loadCatalog(), loadRoutingMatrix()])
+  await Promise.all([loadModels(), loadCatalog(), loadRoutingMatrix(), loadCallRecords()])
 })
 onBeforeUnmount(() => { discoveryEpoch++ })
 </script>
@@ -383,6 +564,27 @@ onBeforeUnmount(() => { discoveryEpoch++ })
         <article><small>默认模型</small><strong>{{ defaultCount }}</strong><span>按能力类型统计</span></article>
       </section>
 
+      <section class="model-panel call-records-panel">
+        <div class="panel-heading"><div><h2>模型调用诊断</h2><p>展示实际路由、模型能力、调用耗时、失败阶段、重试边界和费用上报状态。不会保存提示词、响应内容或凭据。</p></div><button class="text-action" :disabled="callRecordsLoading" @click="loadCallRecords">刷新</button></div>
+        <div v-if="callRecordsLoading" class="state-panel"><span class="loading-ring"></span><b>正在加载调用诊断</b><p>请稍候。</p></div>
+        <div v-else-if="callRecordsError" class="state-panel state-panel--error"><b>暂时无法加载诊断</b><p>{{ callRecordsError }}</p><button @click="loadCallRecords">重试</button></div>
+        <div v-else-if="!callRecords.length" class="state-panel"><b>暂时没有模型调用记录</b><p>运行一个依赖模型的功能后，这里会显示脱敏后的调用链。</p></div>
+        <div v-else class="model-table-wrap">
+          <table class="model-table call-records-table">
+            <thead><tr><th>请求 / 功能</th><th>实际路由</th><th>结果</th><th>耗时 / 费用</th><th>调用追踪</th></tr></thead>
+            <tbody>
+              <tr v-for="record in callRecords" :key="record.id">
+                <td><b>{{ callFeatureLabel(record.feature_key) }}</b><small>{{ record.request_id }}</small><small v-if="record.task_type">任务类型：{{ callFeatureLabel(record.task_type) }}</small></td>
+                <td><b>{{ record.provider || '未发起供应商调用' }} / {{ record.model_name || '调用前检查' }}</b><small>{{ callTypeLabel(record.model_type) }} · {{ callSourceLabel(record.route_source) }}<span v-if="record.is_fallback"> · 备用模型</span></small></td>
+                <td><span :class="['status-chip', callStatusClass(record.status)]"><i></i>{{ callStatusLabel(record.status) }}</span><small v-if="record.error_code" class="diagnostic-code">{{ record.error_code }} · {{ callFailureStageLabel(record.failure_stage) }}</small><small v-if="record.retryable">该失败允许重试</small></td>
+                <td><b>{{ record.duration_ms === null ? '—' : `${record.duration_ms} ms` }}</b><small>{{ callCostStatusLabel(record.cost_status) }}</small><small>{{ callCostHint(record.cost_hint) }}</small></td>
+                <td><small v-for="(item, index) in (record.trace || []).slice(-3)" :key="`${record.id}-${index}`">{{ callTraceLabel(item) }}</small></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <section class="model-panel routing-panel">
         <div class="panel-heading"><div><h2>平台模型路由</h2><p>未单独绑定的功能继承全局默认；模型列表已按功能能力过滤。</p></div><button class="text-action" :disabled="routingLoading" @click="loadRoutingMatrix">刷新</button></div>
         <div v-if="routingLoading" class="state-panel"><span class="loading-ring"></span><b>正在读取路由策略</b><p>请稍候，平台正在计算每个功能的生效模型。</p></div>
@@ -390,7 +592,7 @@ onBeforeUnmount(() => { discoveryEpoch++ })
         <div v-else-if="!routingMatrix.length" class="state-panel"><b>没有可配置的路由功能</b><p>请确认后端路由策略接口已启用。</p></div>
         <div v-else class="routing-grid">
           <article v-for="row in routingMatrix" :key="row.feature_key" class="routing-card">
-            <header><div><b>{{ row.feature_label }}</b><small>需要：{{ row.required_model_types.map(modelTypeLabel).join(' / ') }}</small></div><span v-if="row.feature_key === 'global'" class="default-label">平台级</span></header>
+            <header><div><b>{{ row.feature_label }}</b><small>{{ capabilityContractLabel(row.capability_contract) }} · 需要：{{ row.required_model_types.map(modelTypeLabel).join(' / ') }}</small></div><span v-if="row.feature_key === 'global'" class="default-label">平台级</span></header>
             <div class="routing-effective" :class="{ 'routing-effective--error': row.route_error }">
               <small>当前生效</small><b>{{ modelLabel(row.effective_model) }}</b><span>{{ row.route_error || routeSourceLabel(row.effective_source) }}</span>
             </div>
@@ -420,7 +622,7 @@ onBeforeUnmount(() => { discoveryEpoch++ })
                 <td><span :class="['status-chip', model.is_active ? 'is-online' : 'is-offline']"><i></i>{{ model.is_active ? '已启用' : '已停用' }}</span></td>
                 <td><b class="priority-value">P{{ model.priority }}</b><small v-if="model.is_default" class="default-label">默认</small></td>
                 <td><span>{{ model.has_api_key ? '已安全配置' : '无需或未配置' }}</span></td>
-                <td><div class="row-actions"><button @click="openEdit(model)">编辑</button><button :disabled="testingId !== null" @click="openConnectionTest(model)">{{ testingId === model.id ? '测试中' : '测试连接' }}</button><button @click="showUsage(model)">用量</button><button class="danger" @click="deleteTarget = model">删除</button></div></td>
+                <td><div class="row-actions"><button @click="openEdit(model)">编辑</button><button :disabled="testingId !== null" @click="openConnectionTest(model)">{{ testingId === model.id ? '测试中' : '测试连接' }}</button><button @click="showUsage(model)">用量</button><button :disabled="togglingId !== null" @click="requestToggleModel(model)">{{ togglingId === model.id ? '处理中…' : (model.is_active ? '禁用' : '启用') }}</button><button class="danger" @click="deleteTarget = model">删除</button></div></td>
               </tr>
             </tbody>
           </table>
@@ -435,6 +637,7 @@ onBeforeUnmount(() => { discoveryEpoch++ })
         <div class="config-form">
           <label><span>配置名称 *</span><input v-model="form.name" placeholder="例如：主对话模型"></label>
           <div class="form-row"><label><span>提供商 *</span><select v-model="form.provider" :disabled="catalogLoading" @change="handleProviderChange"><option v-for="option in catalog" :key="option.value" :value="option.value">{{ option.label }}</option></select></label><label><span>模型类型 *</span><select v-model="form.model_type" @change="handleTypeChange"><option v-for="option in availableTypes" :key="option.value" :value="option.value">{{ option.label }}</option></select></label></div>
+          <p v-if="selectedProvider" class="catalog-note">当前协议：{{ protocolLabel(selectedProvider.protocol) }}；可选能力仅显示已声明适配的类型，目录可见不等于当前 Key 可调用。</p>
           <label><span>API 地址</span><input v-model="form.api_base_url" placeholder="供应商 API 基础地址" @input="resetDiscovery" @change="handleEndpointChange"></label>
           <div v-if="form.provider === 'qwen'" class="catalog-note">
             <b>千问接入地址须与密钥地域、业务空间一致</b>
@@ -447,9 +650,19 @@ onBeforeUnmount(() => { discoveryEpoch++ })
             <div class="catalog-toolbar"><b>{{ discoveryLoading ? '正在同步供应商模型…' : '供应商模型目录' }}</b><button type="button" class="text-action" :disabled="discoveryLoading" @click="syncModels">{{ discoveryLoading ? '同步中…' : '刷新模型目录' }}</button></div>
             <p v-if="credentialConfigId && !form.api_key">同步使用已有配置的加密密钥；新建配置仍须填写自己的 API Key 后保存。</p>
             <p>{{ discoveryMessage || '选择供应商后自动加载目录。' }}</p>
-            <p v-if="liveModels === null">公开参考目录（非完整账号清单）。参考日期：{{ selectedProvider?.updated_at }}。<a v-if="selectedProvider?.source_url" :href="selectedProvider.source_url" target="_blank" rel="noopener noreferrer">供应商官方目录</a></p>
+            <div v-if="catalogStatus" class="catalog-status-grid">
+              <span>来源 <b>{{ catalogSourceLabel(catalogStatus.source_kind || catalogStatus.source) }}</b></span>
+              <span>目录状态 <b>{{ catalogStateLabel(catalogStatus.directory_state) }}</b></span>
+              <span>账号状态 <b>{{ accountStateLabel(catalogStatus.account_access_state) }}</b></span>
+              <span>模型状态 <b>{{ modelStateLabel(catalogStatus.model_state) }}</b></span>
+              <span>实际调用 <b>{{ callStateLabel(catalogStatus.model_call_state) }}</b></span>
+              <span v-if="catalogStatus.updated_at">更新时间 <b>{{ catalogStatus.updated_at }}</b></span>
+            </div>
+            <p v-if="catalogStatus?.is_stale" class="form-error">参考快照已超过 {{ catalogStatus.stale_after_days }} 天，不能代表当前账号目录；请填写 API Key 同步，或使用实际调用测试。</p>
+            <p v-if="liveModels === null && selectedProvider?.source_kind === 'reference_snapshot'">当前为公开参考快照，非完整账号清单。<a v-if="selectedProvider?.source_url" :href="selectedProvider.source_url" target="_blank" rel="noopener noreferrer">查看供应商官方说明</a></p>
+            <p v-if="selectedProvider?.source_kind === 'manual_only'">该 Provider 不提供可靠的官方模型列表，不生成虚假模型选项；请保留手工模型 ID 或 Azure 部署名称。</p>
             <p v-if="discoveryError" class="form-error" role="alert">{{ discoveryError }}</p>
-            <p v-if="liveModels !== null && !providerModels.length && !discoveryLoading && !discoveryError">供应商返回空目录。请检查地域、模型授权，或填写实际部署名称。</p>
+            <p v-if="liveModels !== null && !providerModels.length && !discoveryLoading && !discoveryError && catalogStatus?.directory_state !== 'manual_only'">供应商返回空目录。请检查地域、模型授权，或填写实际部署名称。</p>
           </div>
           <label><span>搜索模型</span><input v-model="modelSearch" placeholder="按名称或模型 ID 搜索"></label>
           <label class="catalog-checkbox"><input v-model="showAllModels" type="checkbox"> 显示全部类型的模型（未标注能力的模型也会保留）</label>
@@ -466,11 +679,11 @@ onBeforeUnmount(() => { discoveryEpoch++ })
       <section class="config-modal" role="dialog" aria-modal="true" aria-labelledby="connection-title">
         <header><h2 id="connection-title">连接测试 · {{ testTarget.name }}</h2><button :disabled="testingId !== null" aria-label="关闭" @click="testTarget = null">×</button></header>
         <div class="config-form">
-          <label><span>测试方式</span><select v-model="testMode" :disabled="testingId !== null"><option value="catalog">目录连接与模型可见性（不调用生成）</option><option v-if="canProbe" value="inference">所选模型实际调用（可能产生少量费用）</option></select></label>
+          <label><span>测试方式</span><select v-model="testMode" :disabled="testingId !== null" @change="rememberTestMode(testTarget.id, testMode)"><option value="catalog">目录连接与模型可见性（不调用生成）</option><option v-if="canProbe" value="inference">所选模型实际调用（可能产生少量费用）</option></select></label>
           <p>{{ testMode === 'catalog' ? '检查供应商目录和所选模型。目录不支持或使用 Azure 部署名时，可改用实际调用测试。' : '发送一次简短文本或向量请求，不发送项目数据；失败不自动重试。视觉模型使用文本探测，不代表图片理解验收通过。' }}</p>
           <p v-if="!canProbe">此类型支持目录连接测试；专用媒体生成或实时会话需要对应输入，当前不自动发起这些任务。</p>
           <p v-if="testingId" role="status">正在测试，请稍候…</p>
-          <div v-if="testResult" class="catalog-note" :class="{ 'form-error': !testResult.ok }" role="status"><b>{{ testResult.ok ? '测试通过' : '测试未通过' }}</b><p>{{ testResult.message }}</p><small v-if="testResult.latency_ms">耗时 {{ testResult.latency_ms }} ms</small></div>
+          <div v-if="testResult" class="catalog-note" :class="{ 'form-error': !testResult.ok }" role="status"><b>{{ testResult.ok ? '测试通过' : '测试未通过' }}</b><p>{{ testResult.message }}</p><div class="catalog-status-grid"><span>目录 <b>{{ catalogStateLabel(testResult.directory_state) }}</b></span><span>账号 <b>{{ accountStateLabel(testResult.account_access_state) }}</b></span><span>模型 <b>{{ modelStateLabel(testResult.model_state) }}</b></span><span>调用 <b>{{ callStateLabel(testResult.model_call_state) }}</b></span></div><small v-if="testResult.code">失败阶段：{{ testResult.stage || connectionStageLabel(testResult.code) }}</small><small v-if="testResult.latency_ms">耗时 {{ testResult.latency_ms }} ms</small><p v-if="!testResult.ok && testResult.suggestion"><b>处理建议：</b>{{ testResult.suggestion }}</p></div>
         </div>
         <footer><button class="secondary-action" :disabled="testingId !== null" @click="testTarget = null">关闭</button><button class="primary-action" :disabled="testingId !== null" @click="testConnection">{{ testingId ? '测试中…' : testResult ? '重新测试' : '开始测试' }}</button></footer>
       </section>
@@ -482,6 +695,9 @@ onBeforeUnmount(() => { discoveryEpoch++ })
 
     <div v-if="deleteTarget" class="modal-backdrop" @click.self="deleteTarget = null">
       <section class="confirm-modal" role="alertdialog" aria-modal="true"><span class="danger-mark">!</span><h2>删除模型配置？</h2><p>将删除“{{ deleteTarget.name }}”及其用量记录。依赖该模型的功能可能无法运行，此操作不可撤销。</p><div><button class="secondary-action" @click="deleteTarget = null">取消</button><button class="danger-action" @click="confirmDelete">确认删除</button></div></section>
+    </div>
+    <div v-if="activeTarget" class="modal-backdrop" @click.self="togglingId === null && (activeTarget = null)">
+      <section class="confirm-modal" role="alertdialog" aria-modal="true"><span class="danger-mark">!</span><h2>禁用模型配置？</h2><p>“{{ activeTarget.name }}”停用后将不再参与新的任务路由；关联功能会重新计算生效模型，之后可以再次启用。</p><div><button class="secondary-action" :disabled="togglingId !== null" @click="activeTarget = null">取消</button><button class="danger-action" :disabled="togglingId !== null" @click="toggleModelActive(activeTarget)">{{ togglingId !== null ? '处理中…' : '确认禁用' }}</button></div></section>
     </div>
     </Teleport>
   </WorkspaceShell>

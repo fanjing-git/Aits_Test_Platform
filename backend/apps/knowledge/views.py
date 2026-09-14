@@ -8,10 +8,11 @@ from rest_framework.exceptions import ValidationError
 from apps.knowledge.models import Document, KnowledgeBase, QAPair
 from apps.knowledge.permissions import KnowledgePermission, can_manage
 from apps.projects.permissions import is_platform_admin
-from apps.knowledge.serializers import KnowledgeBaseSerializer, DocumentSerializer, QAPairSerializer
+from apps.knowledge.serializers import KnowledgeBaseSerializer, DocumentSerializer, QAPairSerializer, EmbeddingModeSerializer, KnowledgeSearchRequestSerializer
 from apps.knowledge.loader import load_and_chunk, DocumentLoadError
 from apps.knowledge.retrieval import retrieve, vectorize_document
 from apps.knowledge.review import review_asset
+from apps.knowledge.embedding_policy import EmbeddingPolicyError, EmbeddingPolicyService
 
 class KnowledgeBaseViewSet(viewsets.ModelViewSet):
     """Manage visible knowledge collections."""
@@ -46,7 +47,16 @@ class DocumentViewSet(viewsets.ModelViewSet):
     def index(self,request,pk=None):
         doc=self.get_object()
         if not can_manage(request.user,doc.knowledge_base): return Response({'detail':'无权向量化此文档。'},status=403)
-        try: vectorize_document(doc)
+        serializer = EmbeddingModeSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+        policy = EmbeddingPolicyService()
+        try:
+            execution = policy.prepare(serializer.validated_data['mode'])
+            vectorize_document(doc, vectorizer=execution.vectorizer)
+            doc.metadata = {**doc.metadata, **execution.metadata}
+            doc.save(update_fields=('metadata', 'updated_at'))
+        except EmbeddingPolicyError as exc:
+            raise ValidationError({'detail': str(exc), 'code': exc.code, 'policy': exc.policy}) from exc
         except ValueError as exc: raise ValidationError({'detail':str(exc)})
         return Response(self.get_serializer(doc).data)
     @action(detail=True,methods=('post',))
@@ -71,15 +81,26 @@ class QAPairViewSet(viewsets.ModelViewSet):
 class KnowledgeSearchViewSet(viewsets.ViewSet):
     """Search approved indexed knowledge within visible project bases."""
     permission_classes=(KnowledgePermission,)
+    @action(detail=False,methods=('get',))
+    def policy(self,request):
+        """Expose safe Embedding capability diagnostics to the workbench."""
+        return Response(EmbeddingPolicyService().describe())
+
     def create(self,request):
-        query=request.data.get('query',''); ids=request.data.get('knowledge_base_ids')
+        serializer = KnowledgeSearchRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        query=data['query']; ids=data.get('knowledge_base_ids')
         if ids is None:
             ids=list(KnowledgeBase.objects.values_list('id',flat=True)) if is_platform_admin(request.user) else list(KnowledgeBase.objects.filter(project__memberships__user=request.user).values_list('id',flat=True))
         else:
-            if not isinstance(ids, (list, tuple)):
-                raise ValidationError({'knowledge_base_ids':'必须是知识库ID数组。'})
             visible=set(KnowledgeBase.objects.values_list('id',flat=True)) if is_platform_admin(request.user) else set(KnowledgeBase.objects.filter(project__memberships__user=request.user).values_list('id',flat=True))
             ids=[base_id for base_id in ids if str(base_id) in {str(item) for item in visible}]
-        try: hits=retrieve(query,ids,top_k=int(request.data.get('top_k',5)),threshold=float(request.data.get('threshold',0)))
+        policy = EmbeddingPolicyService()
+        try:
+            execution = policy.prepare(data['mode'])
+            hits=retrieve(query,ids,vectorizer=execution.vectorizer,top_k=data['top_k'],threshold=data['threshold'])
+        except EmbeddingPolicyError as exc:
+            raise ValidationError({'detail': str(exc), 'code': exc.code, 'policy': exc.policy}) from exc
         except (ValueError,TypeError) as exc: raise ValidationError({'detail':str(exc)})
-        return Response({'results':[hit.__dict__ for hit in hits]})
+        return Response({'results':[hit.__dict__ for hit in hits], 'embedding_policy': execution.metadata})

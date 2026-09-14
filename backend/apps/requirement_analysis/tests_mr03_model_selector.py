@@ -1,5 +1,6 @@
 """Focused tests for MR-03 requirement model selection."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -10,8 +11,9 @@ from rest_framework.test import APIClient
 from apps.configs.models import ModelConfig, ModelRoutingPolicy
 from apps.projects.models import Project
 from apps.requirement_analysis.analyzer import RequirementAnalysisError, analyze_requirement_document
-from apps.requirement_analysis.llm_adapter import ModelAnalysisError
+from apps.requirement_analysis.llm_adapter import ModelAnalysisError, RequirementModelAdapter
 from apps.requirement_analysis.models import RequirementAnalysis, RequirementDocument
+from core.llm.manager import ModelFallbackExhausted
 
 
 class RequirementModelSelectorTests(TestCase):
@@ -94,6 +96,36 @@ class RequirementModelSelectorTests(TestCase):
             with self.assertRaises(RequirementAnalysisError) as raised:
                 analyze_requirement_document(self.document)
 
-        self.assertIn("未生成确定性替代结果", str(raised.exception))
-        self.assertEqual(self.document.analyses.count(), 0)
+        self.assertIn("需求分析模型调用失败：provider unavailable", str(raised.exception))
+        self.assertNotIn("已使用确定性基线", str(raised.exception))
+        self.assertEqual(self.document.analyses.count(), 1)
+        self.assertEqual(self.document.analyses.first().quality_status, RequirementAnalysis.QualityStatus.FAILED)
         self.assertEqual(RequirementDocument.objects.get(pk=self.document.pk).status, RequirementDocument.Status.FAILED)
+
+    def test_model_route_failure_reports_attempted_model_and_network_cause(self) -> None:
+        class FailingManager:
+            """Simulate a routed provider failure without touching a real network."""
+
+            def execute_with_fallback(self, *args, **kwargs):
+                try:
+                    raise ModelAnalysisError(
+                        "本机网络策略拒绝了 Django/Python 的外网连接（WinError 10013）。"
+                    )
+                except ModelAnalysisError as cause:
+                    raise ModelFallbackExhausted(("mr03-chat",)) from cause
+
+        prompt_manager = SimpleNamespace(
+            resolve=lambda *args, **kwargs: SimpleNamespace(content="test prompt")
+        )
+        adapter = RequirementModelAdapter(
+            model_manager=FailingManager(),
+            prompt_manager=prompt_manager,
+        )
+
+        with self.assertRaises(ModelAnalysisError) as raised:
+            adapter.run(text="test", evidence=[])
+
+        message = str(raised.exception)
+        self.assertIn("已尝试模型：mr03-chat", message)
+        self.assertIn("WinError 10013", message)
+        self.assertNotIn("确定性基线", message)

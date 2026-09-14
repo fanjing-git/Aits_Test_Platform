@@ -2,6 +2,7 @@
 from typing import Any
 
 from apps.agents.state import AgentState
+from apps.knowledge.embedding_policy import EmbeddingPolicyService
 from apps.knowledge.retrieval import retrieve
 from apps.skills.built_in import register_builtin_skills
 from apps.skills.manager import SkillManager
@@ -14,7 +15,12 @@ def retrieve_node(state: AgentState) -> AgentState:
         raise ValueError("检索节点需要 user_input。")
     entities = state.get("entities", {})
     base_ids = entities.get("knowledge_base_ids") if isinstance(entities, dict) else None
-    hits = retrieve(query, base_ids)
+    if not base_ids:
+        result = dict(state)
+        result["knowledge_context"] = []
+        return result
+    execution = EmbeddingPolicyService().prepare("provider")
+    hits = retrieve(query, base_ids, vectorizer=execution.vectorizer)
     result = dict(state)
     result["knowledge_context"] = [{"embedding_id": hit.embedding_id, "knowledge_base_id": hit.knowledge_base_id, "document_id": hit.document_id, "content": hit.content, "score": hit.score} for hit in hits]
     return result

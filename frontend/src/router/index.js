@@ -19,6 +19,18 @@ const router = createRouter({
       meta: { guestOnly: true },
     },
     {
+      path: '/activate',
+      name: 'activate-account',
+      component: () => import('../views/AccountActionView.vue'),
+      meta: { guestOnly: true },
+    },
+    {
+      path: '/reset-password',
+      name: 'password-reset',
+      component: () => import('../views/AccountActionView.vue'),
+      meta: { guestOnly: true },
+    },
+    {
       path: '/workspace',
       name: 'workspace',
       component: () => import('../views/DashboardView.vue'),

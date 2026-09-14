@@ -8,14 +8,35 @@ from typing import Any
 
 from django.db import transaction
 
-from apps.configs.models import ModelConfig
+from apps.configs.models import ModelRoutingPolicy
+from apps.configs.routing import ModelRouteError, ModelRouteResolver
 from apps.requirement_analysis.llm_adapter import ModelAnalysisError, RequirementModelAdapter
 from apps.requirement_analysis.parser import MAX_DOCUMENT_BYTES
 from apps.requirement_analysis.models import RequirementAnalysis, RequirementDocument
+from apps.requirement_analysis.stability import (
+    analysis_baseline,
+    assess_quality,
+    build_analysis_fingerprint,
+    build_source_fingerprint,
+    count_payload,
+)
 
 
 class RequirementAnalysisError(ValueError):
     """Raised when a requirement cannot produce a useful structured analysis."""
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "analysis_error",
+        *,
+        retryable: bool = False,
+        partial_payload: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+        self.partial_payload = dict(partial_payload or {})
 
 
 @dataclass(frozen=True)
@@ -44,6 +65,19 @@ _ACTOR_TERMS = ("用户", "管理员", "操作员", "客服", "系统", "客户�
 _DATA_TERMS = re.compile(r"(?i)([a-z][a-z0-9_-]*(?:id|token|code|name)|用户信息|订单|支付|地址|凭证|文件|配置|状态)")
 
 
+def _model_error_retryable(code: str) -> bool:
+    """Return whether a model failure can be retried after the current response."""
+    return code not in {
+        "auth_failed",
+        "forbidden",
+        "model_capability_mismatch",
+        "model_inactive",
+        "model_not_found",
+        "protocol_not_supported",
+        "invalid_request",
+    }
+
+
 def _screenshot_payload(document: RequirementDocument) -> tuple[bytes | None, str | None]:
     """Read a bounded screenshot for multimodal models without exposing paths."""
     if document.source_type != RequirementDocument.SourceType.SCREENSHOT or not document.file_path:
@@ -57,6 +91,71 @@ def _screenshot_payload(document: RequirementDocument) -> tuple[bytes | None, st
         return path.read_bytes(), mime_type
     except OSError:
         return None, None
+
+
+def _previous_analysis_baseline(document: RequirementDocument) -> dict[str, Any] | None:
+    """Return the latest analysis summary or the retained post-clear baseline."""
+    latest = (
+        document.analyses
+        .exclude(quality_status=RequirementAnalysis.QualityStatus.FAILED)
+        .order_by("-created_at")
+        .first()
+    )
+    if latest is not None:
+        return {
+            "analysis_fingerprint": latest.analysis_fingerprint,
+            "quality_status": latest.quality_status,
+            "baseline_source": "previous_analysis",
+            "counts": count_payload({
+                "modules": latest.modules,
+                "functions": latest.functions,
+                "linkages": latest.linkages,
+                "test_points": latest.test_points,
+            }),
+        }
+    if isinstance(document.analysis_baseline, dict) and document.analysis_baseline:
+        baseline = dict(document.analysis_baseline)
+        baseline["baseline_source"] = "cleared_analysis"
+        return baseline
+    return None
+
+
+def _apply_quality_metadata(
+    document: RequirementDocument,
+    payload: dict[str, Any],
+    evidence: list[dict[str, Any]] | list[Any],
+    previous_baseline: dict[str, Any] | None,
+) -> tuple[str, str, str]:
+    """Attach T155B fingerprints, coverage, comparison, and quality state."""
+    coverage = dict(payload.get("coverage_report") or {})
+    source_fingerprint = build_source_fingerprint(
+        content_text=document.content_text,
+        source_type=document.source_type,
+        version=document.version,
+        evidence=evidence,
+    )
+    quality = assess_quality(
+        payload=payload,
+        evidence=evidence,
+        coverage_report=coverage,
+        previous_baseline=previous_baseline,
+    )
+    coverage.update({
+        "quality_status": quality["quality_status"],
+        "quality_reason": quality["quality_reason"],
+        "evidence_coverage": quality["evidence_coverage"],
+        "analysis_counts": quality["counts"],
+        "analysis_comparison": quality["comparison"],
+        "needs_confirmation": quality["needs_confirmation"],
+    })
+    analysis_fingerprint = build_analysis_fingerprint(source_fingerprint, coverage)
+    coverage["fingerprints"] = {
+        "source": source_fingerprint,
+        "analysis": analysis_fingerprint,
+        "schema_version": "requirement-analysis-v1",
+    }
+    payload["coverage_report"] = coverage
+    return source_fingerprint, analysis_fingerprint, quality["quality_status"]
 
 
 def _sentences(text: str) -> list[str]:
@@ -217,13 +316,26 @@ def analyze_requirement_document(
     try:
         evidence = document.parse_evidence if isinstance(document.parse_evidence, list) else []
         warnings = document.parse_warnings if isinstance(document.parse_warnings, list) else []
+        previous_baseline = _previous_analysis_baseline(document)
         result: DeepAnalysis
-        required_model_types = (
-            (ModelConfig.ModelType.VISION, ModelConfig.ModelType.MULTIMODAL)
+        feature_key = (
+            ModelRoutingPolicy.FeatureKey.SCREENSHOT_ANALYSIS
             if document.source_type == RequirementDocument.SourceType.SCREENSHOT
-            else (ModelConfig.ModelType.CHAT, ModelConfig.ModelType.MULTIMODAL, ModelConfig.ModelType.VISION)
+            else ModelRoutingPolicy.FeatureKey.REQUIREMENT_ANALYSIS
         )
-        model_available = ModelConfig.objects.filter(is_active=True, model_type__in=required_model_types).exists()
+        try:
+            route = ModelRouteResolver().resolve(
+                feature_key,
+                task_type="screenshot" if document.source_type == RequirementDocument.SourceType.SCREENSHOT else "requirement_analysis",
+                preferred_name=preferred_model_name,
+            )
+        except ModelRouteError as exc:
+            raise RequirementAnalysisError(
+                f"需求分析模型路由不可用：{exc}",
+                code="model_route_unavailable",
+                retryable=False,
+            ) from exc
+        model_available = bool(route and route.available)
         if model_available:
             try:
                 image_bytes, image_mime_type = _screenshot_payload(document)
@@ -237,18 +349,110 @@ def analyze_requirement_document(
                     image_bytes=image_bytes,
                     image_mime_type=image_mime_type,
                 )
-                coverage = {**(model_payload.get("coverage_report") or {}), "title": document.title, "analysis_method": "model_verified", "source_confidence": document.parse_confidence, "evidence_count": len(evidence), "needs_confirmation": bool(warnings) or document.parse_confidence < 0.75}
+                coverage = {
+                    **(model_payload.get("coverage_report") or {}),
+                    "title": document.title,
+                    "analysis_method": "model_verified",
+                    "model_status": "verified",
+                    "call_stage": "screenshot_analysis" if document.source_type == RequirementDocument.SourceType.SCREENSHOT else "requirement_analysis",
+                    "model_route": route.as_dict(),
+                    "source_confidence": document.parse_confidence,
+                    "evidence_count": len(evidence),
+                    "needs_confirmation": bool(warnings) or document.parse_confidence < 0.75,
+                }
                 result = DeepAnalysis(model_payload["modules"], model_payload["functions"], model_payload["linkages"], model_payload["test_points"], coverage)
             except ModelAnalysisError as exc:
+                partial = exc.partial_payload if isinstance(exc.partial_payload, dict) else {}
+                has_partial_items = any(
+                    isinstance(partial.get(key), list)
+                    for key in ("modules", "functions", "linkages", "test_points")
+                )
+                if has_partial_items or exc.structured_trace or exc.code:
+                    partial_coverage = {
+                        **(partial.get("coverage_report") or {}),
+                        "title": document.title,
+                        "analysis_method": "model_partial",
+                        "model_status": "partial",
+                        "call_stage": "screenshot_analysis" if document.source_type == RequirementDocument.SourceType.SCREENSHOT else "requirement_analysis",
+                        "model_route": route.as_dict(),
+                        "error_code": exc.code,
+                        "retryable": _model_error_retryable(exc.code),
+                        "partial_result": True,
+                        "source_confidence": document.parse_confidence,
+                        "evidence_count": len(evidence),
+                        "needs_confirmation": True,
+                    }
+                    if not has_partial_items:
+                        partial_coverage["analysis_method"] = "model_failed"
+                        partial_coverage["model_status"] = "failed"
+                        partial_coverage["partial_result"] = False
+                        structured_generation = partial_coverage.get("structured_generation")
+                        if isinstance(structured_generation, dict):
+                            structured_generation["status"] = "failed"
+                            structured_generation["error_code"] = exc.code
+                    partial_payload = {
+                        "modules": partial.get("modules") if isinstance(partial.get("modules"), list) else [],
+                        "functions": partial.get("functions") if isinstance(partial.get("functions"), list) else [],
+                        "linkages": partial.get("linkages") if isinstance(partial.get("linkages"), list) else [],
+                        "test_points": partial.get("test_points") if isinstance(partial.get("test_points"), list) else [],
+                        "coverage_report": partial_coverage,
+                    }
+                    source_fingerprint, analysis_fingerprint, quality_status = _apply_quality_metadata(
+                        document, partial_payload, evidence, previous_baseline
+                    )
+                    quality_status = (
+                        RequirementAnalysis.QualityStatus.PARTIAL
+                        if has_partial_items
+                        else RequirementAnalysis.QualityStatus.FAILED
+                    )
+                    with transaction.atomic():
+                        RequirementAnalysis.objects.create(
+                            document=document,
+                            modules=partial_payload["modules"],
+                            functions=partial_payload["functions"],
+                            linkages=partial_payload["linkages"],
+                            test_points=partial_payload["test_points"],
+                            coverage_report=partial_payload["coverage_report"],
+                            source_fingerprint=source_fingerprint,
+                            analysis_fingerprint=analysis_fingerprint,
+                            quality_status=quality_status,
+                        )
                 raise RequirementAnalysisError(
-                    f"需求分析模型调用失败，未生成确定性替代结果：{exc}"
+                    f"需求分析模型调用失败：{exc}",
+                    code=exc.code,
+                    retryable=_model_error_retryable(exc.code),
+                    partial_payload=partial,
                 ) from exc
         else:
             result = deep_analyze(document.content_text, title=document.title, source_type=document.source_type, evidence=evidence, source_confidence=document.parse_confidence, warnings=warnings)
+            result.coverage_report.update({
+                "model_status": "not_configured",
+                "call_stage": "screenshot_analysis" if document.source_type == RequirementDocument.SourceType.SCREENSHOT else "requirement_analysis",
+                "model_route": route.as_dict(),
+            })
+        analysis_payload = result.as_dict()
+        source_fingerprint, analysis_fingerprint, quality_status = _apply_quality_metadata(
+            document, analysis_payload, evidence, previous_baseline
+        )
         with transaction.atomic():
-            analysis = RequirementAnalysis.objects.create(document=document, **result.as_dict())
+            analysis = RequirementAnalysis.objects.create(
+                document=document,
+                **analysis_payload,
+                source_fingerprint=source_fingerprint,
+                analysis_fingerprint=analysis_fingerprint,
+                quality_status=quality_status,
+            )
+            update_fields = ["status"]
+            if quality_status == RequirementAnalysis.QualityStatus.COMPLETE:
+                document.analysis_baseline = analysis_baseline(
+                    source_fingerprint=source_fingerprint,
+                    analysis_fingerprint=analysis_fingerprint,
+                    quality_status=quality_status,
+                    counts=count_payload(analysis_payload),
+                )
+                update_fields.append("analysis_baseline")
             document.status = RequirementDocument.Status.ANALYZED
-            document.save(update_fields=("status",))
+            document.save(update_fields=update_fields)
         return analysis
     except RequirementAnalysisError:
         document.status = RequirementDocument.Status.FAILED

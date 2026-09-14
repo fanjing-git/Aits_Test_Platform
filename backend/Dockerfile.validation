@@ -1,0 +1,19 @@
+# Server validation image: reuse the existing aits-v5 runtime layer so model
+# connectivity can be verified without re-downloading slow OS OCR packages.
+FROM aits-v5-backend:latest
+
+USER root
+WORKDIR /app
+
+COPY requirements.txt ./
+COPY wheelhouse /wheelhouse
+RUN pip install --no-cache-dir --disable-pip-version-check \
+    --no-index --find-links=/wheelhouse -r requirements.txt
+
+COPY . ./
+RUN chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 8000
+
+CMD ["python", "manage.py", "runserver", "0.0.0.0:8000", "--noreload"]

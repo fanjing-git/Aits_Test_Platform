@@ -75,6 +75,24 @@ class ModelConfigApiTests(APITestCase):
         self.assertEqual(config.priority, 3)
         self.assertEqual(config.get_api_key(), "rotated-fake-key")
 
+        disabled_response = self.client.patch(
+            detail_url,
+            {"is_active": False},
+            format="json",
+        )
+        self.assertEqual(disabled_response.status_code, status.HTTP_200_OK)
+        config.refresh_from_db()
+        self.assertFalse(config.is_active)
+
+        enabled_response = self.client.patch(
+            detail_url,
+            {"is_active": True},
+            format="json",
+        )
+        self.assertEqual(enabled_response.status_code, status.HTTP_200_OK)
+        config.refresh_from_db()
+        self.assertTrue(config.is_active)
+
         list_response = self.client.get(self.list_url)
         self.assertEqual(list_response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(list_response.data), 1)
@@ -96,6 +114,12 @@ class ModelConfigApiTests(APITestCase):
         self.assertEqual(cleared.status_code, status.HTTP_200_OK)
         config.refresh_from_db()
         self.assertEqual(config.get_api_key(), "")
+
+    def test_missing_fernet_key_returns_service_unavailable_when_saving(self) -> None:
+        with patch.dict(os.environ, {MODEL_CONFIG_FERNET_KEY_ENV: ""}):
+            response = self.client.post(self.list_url, self.payload("missing-key"), format="json")
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(response.data["code"], "server_misconfigured")
 
     def test_only_one_default_is_retained_per_model_type(self) -> None:
         first = self.client.post(self.list_url, self.payload("first"), format="json")

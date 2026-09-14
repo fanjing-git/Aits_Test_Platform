@@ -1,5 +1,7 @@
 """REST endpoints for requirement ingestion, analysis and linkages."""
 
+from pathlib import Path
+
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -12,11 +14,14 @@ from apps.configs.serializers import SafeModelSummarySerializer
 from apps.projects.permissions import is_platform_admin
 from apps.requirement_analysis.analyzer import RequirementAnalysisError, analyze_requirement_document
 from apps.requirement_analysis.linkages import LinkageAnalysisError, identify_document_linkages
+from apps.requirement_analysis.llm_adapter import ModelAnalysisError, RequirementModelAdapter
 from apps.requirement_analysis.models import RequirementAnalysis, RequirementDocument
-from apps.requirement_analysis.parser import DocumentParseError, parse_requirement_document
+from apps.requirement_analysis.parser import MAX_DOCUMENT_BYTES, DocumentParseError, parse_file, parse_requirement_document
 from apps.requirement_analysis.permissions import RequirementPermission, can_manage_requirements
 from apps.requirement_analysis.serializers import RequirementAnalysisSerializer, RequirementDocumentSerializer
 from apps.requirement_analysis.screenshot_analyzer import analyze_screenshot_file
+from apps.requirement_analysis.services import RequirementAnalysisRecordService
+from apps.skills.orchestration import SkillExecutionService
 
 
 class RequirementDocumentViewSet(viewsets.ModelViewSet):
@@ -61,6 +66,24 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
         if not can_manage_requirements(self.request.user, document.project):
             raise PermissionDenied("当前项目角色不能执行需求分析操作。")
 
+    def _analysis_failure_response(self, document, exc: RequirementAnalysisError) -> Response:
+        """Return a structured, safe analysis failure for the workbench."""
+        document.refresh_from_db()
+        latest = document.analyses.order_by("-created_at").first()
+        partial = bool(latest and (latest.coverage_report or {}).get("analysis_method") == "model_partial")
+        payload = {
+            "detail": str(exc),
+            "code": getattr(exc, "code", "analysis_error"),
+            "status": "partial" if partial else "failed",
+            "retryable": bool(getattr(exc, "retryable", False)),
+            "document_status": document.status,
+            "latest_analysis": RequirementAnalysisSerializer(latest).data if latest else None,
+        }
+        response_status = status.HTTP_502_BAD_GATEWAY if getattr(exc, "code", "") not in {
+            "analysis_error", "model_capability_mismatch", "model_inactive", "model_not_found", "model_route_unavailable",
+        } else status.HTTP_400_BAD_REQUEST
+        return Response(payload, status=response_status)
+
     @staticmethod
     def _preferred_model_name(request, feature_key: str) -> str | None:
         """Validate an optional per-run model selection against feature capability."""
@@ -96,11 +119,13 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
             route = ModelRouteResolver().resolve(feature_key)
             effective = route.primary.config if route.primary else None
             effective_source = route.primary.source if route.primary else ""
-            route_error = ""
+            route_error = route.failure_reason
+            route_diagnostics = route.as_dict()
         except ModelRouteError as exc:
             effective = None
             effective_source = ""
             route_error = str(exc)
+            route_diagnostics = {"available": False, "failure_reason": route_error}
         return Response({
             "feature_key": feature_key,
             "required_model_types": list(required),
@@ -108,6 +133,7 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
             "effective_model": SafeModelSummarySerializer(effective).data if effective else None,
             "effective_source": effective_source,
             "route_error": route_error,
+            "route": route_diagnostics,
         })
 
     @action(detail=True, methods=("post",))
@@ -119,7 +145,13 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
             parse_requirement_document(document)
         except DocumentParseError as exc:
             raise ValidationError({"detail": str(exc)}) from exc
-        return Response(self.get_serializer(document).data)
+        skill = SkillExecutionService().execute(
+            "requirement_analysis",
+            {"user_input": document.content_text or document.title, "project_id": str(document.project_id)},
+        )
+        data = self.get_serializer(document).data
+        data["skill_execution"] = skill.as_dict() if skill else None
+        return Response(data)
 
     @action(detail=True, methods=("post",))
     def analyze(self, request, pk=None):
@@ -135,9 +167,15 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
         try:
             analyze_requirement_document(document, preferred_model_name=preferred_model_name)
         except RequirementAnalysisError as exc:
-            raise ValidationError({"detail": str(exc)}) from exc
+            return self._analysis_failure_response(document, exc)
         document.refresh_from_db()
-        return Response(self.get_serializer(document).data)
+        skill = SkillExecutionService().execute(
+            "requirement_analysis",
+            {"user_input": document.content_text or document.title, "project_id": str(document.project_id)},
+        )
+        data = self.get_serializer(document).data
+        data["skill_execution"] = skill.as_dict() if skill else None
+        return Response(data)
 
     @action(detail=True, methods=("post",))
     def linkages(self, request, pk=None):
@@ -153,19 +191,131 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
             raise ValidationError({"detail": str(exc)}) from exc
         return Response(RequirementAnalysisSerializer(updated).data)
 
+    @action(detail=True, methods=("post",), url_path="clear-analysis")
+    def clear_analysis(self, request, pk=None):
+        """Clear analysis history while preserving the requirement source."""
+        document = self.get_object()
+        self._require_manager(document)
+        result = RequirementAnalysisRecordService().clear_records(document)
+        document.refresh_from_db()
+        data = self.get_serializer(document).data
+        data.update(result)
+        return Response(data)
+
     @action(detail=True, methods=("post",), url_path="screenshot-analysis")
     def screenshot_analysis(self, request, pk=None):
-        """Return evidence-grounded screenshot observations for screenshot sources."""
+        """Run visual analysis through the model runtime or an explicit OCR baseline."""
         document = self.get_object()
         self._require_manager(document)
         if document.source_type != RequirementDocument.SourceType.SCREENSHOT:
             raise ValidationError({"detail": "只有截图来源支持截图识别分析。"})
-        if not document.file_path:
-            raise ValidationError({"detail": "截图文件不存在，请重新导入图片。"})
+        feature_key = ModelRoutingPolicy.FeatureKey.SCREENSHOT_ANALYSIS
+        preferred_model_name = self._preferred_model_name(request, feature_key)
         try:
-            report = analyze_screenshot_file(document.file_path).as_dict()
-        except DocumentParseError as exc:
-            raise ValidationError({"detail": str(exc)}) from exc
+            route = ModelRouteResolver().resolve(
+                feature_key,
+                task_type="screenshot",
+                preferred_name=preferred_model_name,
+            )
+        except ModelRouteError as exc:
+            raise ValidationError({"detail": str(exc), "code": "model_capability_mismatch"}) from exc
+
+        if not document.file_path:
+            document.visual_analysis_report = {
+                "status": "failed",
+                "analysis_method": "unavailable",
+                "code": "image_required",
+                "warnings": ["截图视觉分析需要图片文件；当前仅有 OCR 正文。"],
+            }
+            document.save(update_fields=("visual_analysis_report",))
+            raise ValidationError({"detail": "截图文件不存在，请重新导入图片后执行视觉分析。", "code": "image_required"})
+
+        path = Path(document.file_path)
+        try:
+            if not path.is_file() or path.stat().st_size > MAX_DOCUMENT_BYTES:
+                raise DocumentParseError("截图不存在或超过10MB限制。")
+            image_bytes = path.read_bytes()
+        except (DocumentParseError, OSError) as exc:
+            raise ValidationError({"detail": "截图文件无法读取，请重新导入图片。", "code": "image_unreadable"}) from exc
+
+        evidence = list(document.parse_evidence) if isinstance(document.parse_evidence, list) else []
+        if not evidence:
+            try:
+                evidence = list(parse_file(path).evidence)
+            except DocumentParseError:
+                evidence = []
+        if route.available:
+            mime_type = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}.get(path.suffix.casefold(), "image/png")
+            try:
+                report = RequirementModelAdapter().analyze_visual(
+                    text=document.content_text,
+                    evidence=evidence,
+                    image_bytes=image_bytes,
+                    image_mime_type=mime_type,
+                    project_name=document.project.name,
+                    preferred_model_name=preferred_model_name,
+                )
+                report = {
+                    **report,
+                    "status": "completed",
+                    "analysis_method": "model_verified",
+                    "model_status": "verified",
+                    "model_route": route.as_dict(),
+                    "call_stage": "screenshot_analysis",
+                }
+            except ModelAnalysisError as exc:
+                report = {
+                    "status": "failed",
+                    "analysis_method": "model_partial" if exc.partial_payload else "model_failed",
+                    "model_status": "partial" if exc.partial_payload else "failed",
+                    "model_route": route.as_dict(),
+                    "call_stage": "screenshot_analysis",
+                    "error_code": exc.code,
+                    "retryable": exc.code not in {"auth_failed", "forbidden", "model_capability_mismatch", "protocol_not_supported"},
+                    "structured_generation": {"status": "partial", "segments": list(exc.structured_trace)},
+                    "warnings": [str(exc)],
+                }
+                document.visual_analysis_report = report
+                document.status = RequirementDocument.Status.FAILED
+                document.save(update_fields=("visual_analysis_report", "status"))
+                response_status = status.HTTP_502_BAD_GATEWAY if exc.code not in {"model_capability_mismatch", "protocol_not_supported"} else status.HTTP_400_BAD_REQUEST
+                return Response({"detail": str(exc), "code": exc.code, "status": "partial" if exc.partial_payload else "failed", "retryable": report["retryable"], "document_status": document.status, "visual_analysis_report": report}, status=response_status)
+        else:
+            try:
+                report = analyze_screenshot_file(document.file_path).as_dict()
+            except DocumentParseError as exc:
+                failed_report = {
+                    "status": "failed",
+                    "analysis_method": "deterministic_ocr_baseline",
+                    "model_status": "not_configured",
+                    "model_route": route.as_dict(),
+                    "call_stage": "screenshot_analysis",
+                    "error_code": "image_parse_failed",
+                    "retryable": True,
+                    "warnings": [str(exc)],
+                }
+                document.visual_analysis_report = failed_report
+                document.status = RequirementDocument.Status.FAILED
+                document.save(update_fields=("visual_analysis_report", "status"))
+                return Response(
+                    {"detail": str(exc), "code": "image_parse_failed", "status": "failed", "retryable": True, "document_status": document.status, "visual_analysis_report": failed_report},
+                    status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                )
+            report.update({
+                "status": "completed",
+                "analysis_method": "deterministic_ocr_baseline",
+                "model_status": "not_configured",
+                "model_route": route.as_dict(),
+                "call_stage": "screenshot_analysis",
+                "retryable": False,
+            })
+        skill = SkillExecutionService().execute(
+            "ui_test",
+            {"user_input": document.title, "image": document.file_path, "project_id": str(document.project_id)},
+        )
+        report["skill_execution"] = skill.as_dict() if skill else None
+        document.visual_analysis_report = report
+        document.save(update_fields=("visual_analysis_report",))
         return Response(report)
 
 

@@ -3,7 +3,7 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-from apps.agents.models import Agent
+from apps.agents.models import Agent, AgentExecution
 from apps.configs.models import ModelConfig, PromptConfig
 from apps.projects.models import Project
 
@@ -82,3 +82,31 @@ class AgentSerializer(serializers.ModelSerializer):
         agent.full_clean()
         agent.save()
         return agent
+
+
+class AgentExecutionRequestSerializer(serializers.Serializer):
+    """Validate the user-controlled input for one agent execution."""
+
+    input_text = serializers.CharField(max_length=20000, trim_whitespace=True)
+    interrupt_signal = serializers.ChoiceField(
+        choices=("", "pause", "cancel"), required=False, allow_blank=True, default=""
+    )
+
+
+class AgentExecutionSerializer(serializers.ModelSerializer):
+    """Expose execution state without the original prompt or credentials."""
+
+    agent_id = serializers.UUIDField(read_only=True)
+    project_id = serializers.UUIDField(read_only=True)
+    requested_by_id = serializers.IntegerField(read_only=True)
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+
+    class Meta:
+        model = AgentExecution
+        fields = (
+            "id", "agent_id", "project_id", "requested_by_id", "agent_name",
+            "agent_version", "status", "status_label", "phase", "interrupt_signal",
+            "model_route", "trace", "result", "error_code", "error_message",
+            "retryable", "task_id", "started_at", "finished_at", "created_at", "updated_at",
+        )
+        read_only_fields = fields

@@ -10,6 +10,23 @@ export function routeSourceLabel(source) {
   return routeSourceLabels[source] || source || '未配置'
 }
 
+export function capabilityContractLabel(contract) {
+  if (!contract) return '未声明调用契约'
+  const inputLabels = {
+    text: '文本输入',
+    text_and_image: '文本 + 图片输入',
+    text_and_tools: '文本 + 工具上下文',
+    text_or_documents: '文本或文档输入',
+    provider_metadata: '配置元数据',
+  }
+  const outputLabels = {
+    json_object: '结构化 JSON',
+    vectors_or_ranked_documents: '向量或排序结果',
+    configuration: '配置结果',
+  }
+  return `${contract.label || '模型调用'}：${inputLabels[contract.input_mode] || contract.input_mode || '输入'} → ${outputLabels[contract.output_mode] || contract.output_mode || '结果'}`
+}
+
 export function routingPayload(row) {
   return {
     feature_key: row.feature_key,

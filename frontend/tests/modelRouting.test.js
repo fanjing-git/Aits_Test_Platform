@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { routeSourceLabel, routingPayload } from '../src/utils/modelRouting.js'
+import { capabilityContractLabel, routeSourceLabel, routingPayload } from '../src/utils/modelRouting.js'
 
 test('route source labels are understandable Chinese text', () => {
   assert.equal(routeSourceLabel('global'), '平台全局默认')
@@ -25,4 +25,12 @@ test('routing payload preserves inherit-global and policy switches', () => {
     allow_deterministic_baseline: false,
     is_active: true,
   })
+})
+
+test('capability contract gives the operator a real input/output contract', () => {
+  assert.equal(
+    capabilityContractLabel({ label: '需求深度分析', input_mode: 'text', output_mode: 'json_object' }),
+    '需求深度分析：文本输入 → 结构化 JSON',
+  )
+  assert.equal(capabilityContractLabel(null), '未声明调用契约')
 })

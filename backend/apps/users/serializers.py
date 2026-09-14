@@ -7,10 +7,18 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
+from django.utils import timezone
 from rest_framework import exceptions, serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from apps.users.models import UserProfile
+from apps.users.models import AccountActionToken, AccountAuditEvent, UserProfile
+from apps.users.services import (
+    InvalidAccountActionToken,
+    activate_user,
+    get_valid_action_token,
+    invite_user,
+    reset_user_password,
+)
 
 User = get_user_model()
 
@@ -49,6 +57,9 @@ class UserManagementSerializer(serializers.ModelSerializer):
         source="profile.role", choices=UserProfile.Role.choices
     )
     role_label = serializers.CharField(source="profile.get_role_display", read_only=True)
+    pending_invitation = serializers.SerializerMethodField()
+    invitation_expires_at = serializers.SerializerMethodField()
+    pending_password_reset = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -63,6 +74,9 @@ class UserManagementSerializer(serializers.ModelSerializer):
             "is_active",
             "date_joined",
             "last_login",
+            "pending_invitation",
+            "invitation_expires_at",
+            "pending_password_reset",
         )
         read_only_fields = (
             "id",
@@ -73,7 +87,36 @@ class UserManagementSerializer(serializers.ModelSerializer):
             "role_label",
             "date_joined",
             "last_login",
+            "pending_invitation",
+            "invitation_expires_at",
+            "pending_password_reset",
         )
+
+    def _pending_token(self, user: Any, kind: str) -> Any:
+        """Return the newest unconsumed token without exposing its digest."""
+        return (
+            user.account_action_tokens.filter(
+                kind=kind,
+                used_at__isnull=True,
+            )
+            .order_by("-created_at")
+            .first()
+        )
+
+    def get_pending_invitation(self, obj: Any) -> bool:
+        """Expose whether an inactive account has a usable invitation."""
+        token = self._pending_token(obj, AccountActionToken.Kind.INVITATION)
+        return bool(token and token.expires_at > timezone.now())
+
+    def get_invitation_expires_at(self, obj: Any) -> Any:
+        """Expose only an invitation expiry timestamp, never its secret."""
+        token = self._pending_token(obj, AccountActionToken.Kind.INVITATION)
+        return token.expires_at if token and token.expires_at > timezone.now() else None
+
+    def get_pending_password_reset(self, obj: Any) -> bool:
+        """Expose whether an unused password-reset link exists."""
+        token = self._pending_token(obj, AccountActionToken.Kind.PASSWORD_RESET)
+        return bool(token and token.expires_at > timezone.now())
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         request = self.context.get("request")
@@ -198,6 +241,121 @@ class RegistrationSerializer(serializers.ModelSerializer):
         # The profile signal owns creation; this fallback also supports bulk/custom flows.
         UserProfile.objects.get_or_create(user=user)
         return user
+
+
+class AdminInvitationSerializer(serializers.Serializer):
+    """Validate the minimum data required to invite a colleague."""
+
+    account = serializers.CharField(max_length=254)
+    role = serializers.ChoiceField(
+        choices=UserProfile.Role.choices,
+        default=UserProfile.Role.VIEWER,
+    )
+    expires_in_hours = serializers.IntegerField(
+        min_value=1,
+        max_value=168,
+        default=72,
+        required=False,
+    )
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        """Normalize a username/email and reject duplicate accounts safely."""
+        account = attrs["account"].strip()
+        if not account:
+            raise serializers.ValidationError({"account": "请输入用户名或邮箱。"})
+        if self._is_email(account):
+            username = User.objects.normalize_email(account).lower()
+            email = username
+        else:
+            username = account
+            email = ""
+        try:
+            User._meta.get_field("username").run_validators(username)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"account": exc.messages}) from exc
+        if User.objects.filter(username__iexact=username).exists() or (
+            email and User.objects.filter(email__iexact=email).exists()
+        ):
+            raise serializers.ValidationError({"account": "该账号已存在，请在用户列表中重发邀请或重置密码。"})
+        attrs.update({"username": username, "email": email})
+        return attrs
+
+    @staticmethod
+    def _is_email(value: str) -> bool:
+        """Return whether an identifier is an email address."""
+        try:
+            serializers.EmailField().run_validation(value)
+        except serializers.ValidationError:
+            return False
+        return True
+
+    def create(self, validated_data: dict[str, Any]) -> dict[str, Any]:
+        """Create an inactive account and return a one-time activation secret."""
+        user, raw_token, token = invite_user(
+            username=validated_data["username"],
+            email=validated_data["email"],
+            role=validated_data["role"],
+            created_by=self.context["request"].user,
+            lifetime_hours=validated_data.get("expires_in_hours", 72),
+        )
+        return {"user": user, "raw_token": raw_token, "token": token}
+
+
+class AccountActionSerializer(serializers.Serializer):
+    """Validate and consume a one-time activation or reset link."""
+
+    token = serializers.CharField(write_only=True, trim_whitespace=True)
+    password = serializers.CharField(
+        write_only=True,
+        trim_whitespace=False,
+        validators=[validate_password],
+    )
+    password_confirm = serializers.CharField(write_only=True, trim_whitespace=False)
+    action_kind = serializers.CharField(write_only=True)
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        """Check token state and password confirmation before consuming anything."""
+        if attrs["password"] != attrs["password_confirm"]:
+            raise serializers.ValidationError({"password_confirm": "两次输入的密码不一致。"})
+        try:
+            token = get_valid_action_token(attrs["token"], attrs["action_kind"])
+        except InvalidAccountActionToken as exc:
+            raise serializers.ValidationError({"token": str(exc)}) from exc
+        validate_password(attrs["password"], user=token.user)
+        attrs["_user_id"] = token.user_id
+        return attrs
+
+    def create(self, validated_data: dict[str, Any]) -> Any:
+        """Apply the requested action atomically and invalidate the link."""
+        raw_token = validated_data["token"]
+        password = validated_data["password"]
+        if validated_data["action_kind"] == AccountActionToken.Kind.INVITATION:
+            return activate_user(raw_token, password)
+        return reset_user_password(raw_token, password)
+
+
+class AccountAuditEventSerializer(serializers.ModelSerializer):
+    """Expose safe account audit evidence to platform administrators."""
+
+    actor_username = serializers.CharField(
+        source="actor.username",
+        read_only=True,
+        default=None,
+    )
+    event_label = serializers.CharField(source="get_event_display", read_only=True)
+
+    class Meta:
+        model = AccountAuditEvent
+        fields = (
+            "id",
+            "event",
+            "event_label",
+            "actor_username",
+            "target_username",
+            "metadata",
+            "created_at",
+        )
+        read_only_fields = fields
 
 
 class AccountTokenObtainPairSerializer(serializers.Serializer):

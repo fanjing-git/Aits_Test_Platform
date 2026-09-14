@@ -1,11 +1,13 @@
 from django.test import TestCase
-from apps.skills.built_in import BUILT_IN_SKILLS, register_builtin_skills
+from apps.skills.built_in import BUILT_IN_SKILLS, CaseReviewSkill, register_builtin_skills
 from apps.skills.manager import SkillManager
 
 class BuiltInSecondBatchTests(TestCase):
     def test_second_batch_skills_register_and_execute(self):
         manager = SkillManager(); register_builtin_skills(manager)
-        self.assertEqual(len(BUILT_IN_SKILLS), 7)
+        self.assertEqual(len(BUILT_IN_SKILLS), 9)
+        self.assertEqual(manager.load(CaseReviewSkill.name).execute({"cases": [{"id": "1"}]})["status"], "planned")
+        self.assertEqual(manager.load("需求分析").execute({"requirement": "登录需求"})["status"], "planned")
         self.assertEqual(manager.load("性能测试").execute({"concurrency": 60000})["engine"], "locust")
         self.assertEqual(manager.load("APP测试").execute({"platform": "android"})["platform"], "android")
         self.assertEqual(manager.load("安全测试").execute({"target": "staging", "authorized": True})["status"], "planned")

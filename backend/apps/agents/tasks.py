@@ -11,3 +11,16 @@ def run_agent_graph(self, state: dict[str, Any]) -> dict[str, Any]:
         return build_agent_graph().invoke(state)
     except Exception as exc:
         return {**state, "execution_status": "failed", "error_message": str(exc)}
+
+
+@shared_task(bind=True, name="agents.run_execution")
+def run_agent_execution(self, execution_id: str) -> dict[str, Any]:
+    """Run one persisted agent execution through the controlled service."""
+    from apps.agents.execution import AgentExecutionService
+
+    execution = AgentExecutionService().run(execution_id)
+    return {
+        "id": str(execution.pk),
+        "status": execution.status,
+        "error_code": execution.error_code,
+    }

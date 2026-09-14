@@ -1,5 +1,6 @@
 """Persistence models for configurable AI model providers."""
 
+import uuid
 from typing import Any
 
 from django.core.exceptions import ValidationError
@@ -220,6 +221,65 @@ class ModelUsageRecord(models.Model):
     @property
     def total_tokens(self) -> int:
         return self.input_tokens + self.output_tokens
+
+
+class ModelCallRecord(models.Model):
+    """Store a bounded, credential-free diagnostic for one model attempt."""
+
+    class Status(models.TextChoices):
+        STARTED = "started", "Started"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+        BLOCKED = "blocked", "Blocked"
+
+    class CostStatus(models.TextChoices):
+        NOT_REPORTED = "not_reported", "Not reported"
+        ESTIMATED = "estimated", "Estimated"
+        REPORTED = "reported", "Reported"
+
+    request_id = models.UUIDField(default=uuid.uuid4, db_index=True)
+    feature_key = models.CharField(max_length=64, db_index=True)
+    task_type = models.CharField(max_length=64, blank=True, default="")
+    stage = models.CharField(max_length=64, default="model_call")
+    model_config = models.ForeignKey(
+        ModelConfig,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="call_records",
+    )
+    provider = models.CharField(max_length=32, blank=True, default="")
+    model_name = models.CharField(max_length=200, blank=True, default="")
+    model_type = models.CharField(max_length=32, blank=True, default="")
+    route_source = models.CharField(max_length=40, blank=True, default="")
+    is_fallback = models.BooleanField(default=False)
+    status = models.CharField(max_length=16, choices=Status.choices, db_index=True)
+    failure_stage = models.CharField(max_length=64, blank=True, default="")
+    error_code = models.CharField(max_length=80, blank=True, default="")
+    retryable = models.BooleanField(default=False)
+    duration_ms = models.PositiveIntegerField(null=True, blank=True)
+    cost_status = models.CharField(
+        max_length=20,
+        choices=CostStatus.choices,
+        default=CostStatus.NOT_REPORTED,
+    )
+    cost_hint = models.CharField(max_length=160, blank=True, default="")
+    trace = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("-created_at", "-pk")
+        indexes = [
+            models.Index(
+                fields=("feature_key", "created_at"),
+                name="config_call_feature_time_idx",
+            ),
+            models.Index(
+                fields=("status", "created_at"),
+                name="config_call_status_time_idx",
+            ),
+        ]
 
 
 class PromptConfig(models.Model):

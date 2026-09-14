@@ -8,6 +8,7 @@ from django.test import SimpleTestCase, TestCase
 from apps.case_generation.generator import generate_document_cases
 from apps.case_generation.llm_adapter import CaseReviewModelAdapter, _localize_review_text
 from apps.case_generation.models import CaseGenerationRecord
+from apps.configs.models import ModelConfig, ModelRoutingPolicy
 from apps.case_generation.reviewer import CaseReviewError, review_cases, review_generation_record
 from apps.requirement_analysis.llm_adapter import ModelAnalysisError
 from apps.projects.models import Project
@@ -89,9 +90,11 @@ class CaseReviewTests(TestCase):
         self.assertEqual(fake.review.call_count, 5)
 
     def test_configured_model_review_failure_is_not_silent(self) -> None:
-        from apps.configs.models import ModelConfig
-
-        ModelConfig.objects.create(name="review-failing-chat", provider=ModelConfig.Provider.CUSTOM, model_name="fake", model_type=ModelConfig.ModelType.CHAT)
+        model = ModelConfig.objects.create(name="review-failing-chat", provider=ModelConfig.Provider.CUSTOM, model_name="fake", model_type=ModelConfig.ModelType.CHAT)
+        ModelRoutingPolicy.objects.create(
+            feature_key=ModelRoutingPolicy.FeatureKey.CASE_REVIEW,
+            primary_model=model,
+        )
         fake = Mock()
         fake.review.side_effect = ModelAnalysisError("provider unavailable")
         with self.assertRaises(CaseReviewError):

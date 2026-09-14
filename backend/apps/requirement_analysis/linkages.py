@@ -93,7 +93,14 @@ def identify_document_linkages(analysis: RequirementAnalysis) -> RequirementAnal
     existing = analysis.test_points if isinstance(analysis.test_points, list) else []
     analysis.linkages = result.scenarios
     analysis.test_points = existing + result.test_points
-    analysis.coverage_report = {**(analysis.coverage_report if isinstance(analysis.coverage_report, dict) else {}), "cross_module_linkage_count": len(result.scenarios), "linkage_relationships": result.summary}
+    analysis.coverage_report = {
+        **(analysis.coverage_report if isinstance(analysis.coverage_report, dict) else {}),
+        "cross_module_linkage_count": len(result.scenarios),
+        "linkage_relationships": result.summary,
+        "linkage_method": "deterministic_evidence",
+        "call_stage": "linkage_analysis",
+        "model_status": "not_applicable",
+    }
     analysis.save(update_fields=("linkages", "test_points", "coverage_report"))
     return analysis
 

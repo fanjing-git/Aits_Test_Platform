@@ -11,6 +11,7 @@ from apps.case_generation.reviewer import CaseReviewError, review_generation_rec
 from apps.case_generation.selector import CaseSelectionError, select_generation_record
 from apps.case_generation.serializers import CaseGenerationRecordSerializer
 from apps.projects.permissions import is_platform_admin
+from apps.skills.orchestration import SkillExecutionService
 from apps.configs.models import ModelConfig, ModelRoutingPolicy
 from apps.configs.routing import ModelRouteError, ModelRouteResolver, required_model_types
 from apps.configs.serializers import SafeModelSummarySerializer
@@ -64,11 +65,13 @@ class CaseGenerationViewSet(viewsets.ModelViewSet):
             route = ModelRouteResolver().resolve(feature)
             effective = route.primary.config if route.primary else None
             effective_source = route.primary.source if route.primary else ""
-            route_error = ""
+            route_error = route.failure_reason
+            route_diagnostics = route.as_dict()
         except ModelRouteError as exc:
             effective = None
             effective_source = ""
             route_error = str(exc)
+            route_diagnostics = {"available": False, "failure_reason": route_error}
         return Response({
             "feature_key": feature,
             "required_model_types": list(required),
@@ -76,6 +79,7 @@ class CaseGenerationViewSet(viewsets.ModelViewSet):
             "effective_model": SafeModelSummarySerializer(effective).data if effective else None,
             "effective_source": effective_source,
             "route_error": route_error,
+            "route": route_diagnostics,
         })
 
     def create(self, request, *args, **kwargs):
@@ -90,7 +94,13 @@ class CaseGenerationViewSet(viewsets.ModelViewSet):
             record = generate_document_cases(document, preferred_model_name=preferred_model_name)
         except CaseGenerationError as exc:
             raise ValidationError({"detail": str(exc)}) from exc
-        return Response(self.get_serializer(record).data, status=201)
+        skill = SkillExecutionService().execute(
+            "case_gen",
+            {"user_input": document.content_text or document.title, "project_id": str(document.project_id)},
+        )
+        data = self.get_serializer(record).data
+        data["skill_execution"] = skill.as_dict() if skill else None
+        return Response(data, status=201)
 
     @action(detail=True, methods=("post",))
     def review(self, request, pk=None):
@@ -105,7 +115,13 @@ class CaseGenerationViewSet(viewsets.ModelViewSet):
             record = review_generation_record(record, preferred_model_name=preferred_model_name)
         except CaseReviewError as exc:
             raise ValidationError({"detail": str(exc)}) from exc
-        return Response(self.get_serializer(record).data)
+        skill = SkillExecutionService().execute(
+            "case_review",
+            {"user_input": record.document.content_text or record.document.title, "cases": record.cases, "project_id": str(record.project_id)},
+        )
+        data = self.get_serializer(record).data
+        data["skill_execution"] = skill.as_dict() if skill else None
+        return Response(data)
 
     @action(detail=True, methods=("post",))
     def select(self, request, pk=None):

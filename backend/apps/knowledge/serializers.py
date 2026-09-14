@@ -3,6 +3,24 @@ from rest_framework import serializers
 from apps.knowledge.models import Document, Embedding, KnowledgeBase, QAPair
 from apps.projects.models import Project
 
+
+class EmbeddingModeSerializer(serializers.Serializer):
+    """Validate an explicit provider or offline-test embedding mode."""
+
+    mode = serializers.ChoiceField(choices=("provider", "offline_test"), default="provider")
+
+
+class KnowledgeSearchRequestSerializer(serializers.Serializer):
+    """Validate bounded knowledge search input and its embedding mode."""
+
+    query = serializers.CharField(allow_blank=False, trim_whitespace=True)
+    knowledge_base_ids = serializers.ListField(
+        child=serializers.UUIDField(), required=False, allow_null=True
+    )
+    top_k = serializers.IntegerField(min_value=1, max_value=50, default=5)
+    threshold = serializers.FloatField(min_value=-1, max_value=1, default=0)
+    mode = serializers.ChoiceField(choices=("provider", "offline_test"), default="provider")
+
 class KnowledgeBaseSerializer(serializers.ModelSerializer):
     """Represent a knowledge collection without internal details."""
     project_name = serializers.CharField(source='project.name', read_only=True)

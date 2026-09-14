@@ -12,6 +12,7 @@ from rest_framework.test import APITestCase
 from apps.configs.catalog import normalize_model, provider_catalog
 from apps.configs.models import ModelConfig
 from apps.configs.services import ProviderConnectionTester, ProviderError, canonical_base, discover_models
+from core.utils.crypto import MODEL_CONFIG_FERNET_KEY_ENV
 
 
 class JsonResponse:
@@ -126,12 +127,13 @@ class ProviderDiscoveryTests(SimpleTestCase):
         self.assertFalse(result.inference_verified)
 
     def test_explicit_qwen_inference_works_when_models_endpoint_is_unavailable(self) -> None:
-        with patch("apps.configs.services.urlopen", return_value=JsonResponse({"choices": [{"message": {"content": "OK"}}]})) as upstream:
+        with patch("apps.configs.services.urlopen", return_value=JsonResponse({"choices": [{"message": {"content": '{"ok": true}'}}]})) as upstream:
             result = ProviderConnectionTester().test(self.config(), mode="inference")
         self.assertTrue(result.inference_verified)
         request = upstream.call_args.args[0]
         self.assertTrue(request.full_url.endswith("/chat/completions"))
         self.assertFalse(json.loads(request.data)["enable_thinking"])
+        self.assertEqual(json.loads(request.data)["response_format"], {"type": "json_object"})
         self.assertEqual(upstream.call_count, 1)
 
     def test_native_inference_probes(self) -> None:
@@ -204,12 +206,23 @@ class DiscoveryApiTests(APITestCase):
         self.client.force_authenticate(None)
         self.assertEqual(self.client.post(self.url, {"provider": "qwen"}).status_code, 401)
 
+    def test_missing_fernet_key_is_reported_as_service_misconfiguration(self) -> None:
+        with patch.dict("os.environ", {MODEL_CONFIG_FERNET_KEY_ENV: ""}):
+            response = self.client.post(
+                self.url,
+                {"provider": "qwen", "api_key": "draft-secret"},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data["code"], "server_misconfigured")
+        self.assertNotIn("draft-secret", json.dumps(response.data))
+
     def test_new_types_save_and_test_modes_are_explicit(self) -> None:
         for kind in ("tts", "rerank", "image_generation", "multimodal", "video", "asr"):
             response = self.client.post("/api/configs/models/", {"name": kind, "provider": "qwen", "model_type": kind, "model_name": "custom-deployment"}, format="json")
             self.assertEqual(response.status_code, 201)
         url = f"/api/configs/models/{self.config.pk}/test-connection/"
         self.assertEqual(self.client.post(url, {"mode": "bad"}).status_code, 400)
-        with patch("apps.configs.services.urlopen", return_value=JsonResponse({"choices": [{"message": {"content": "OK"}}]})):
+        with patch("apps.configs.services.urlopen", return_value=JsonResponse({"choices": [{"message": {"content": '{"ok": true}'}}]})):
             response = self.client.post(url, {"mode": "inference"})
         self.assertTrue(response.data["inference_verified"])

@@ -1,6 +1,404 @@
 ﻿# AI 智能体测试平台开发状态
 
-Updated: 2026-09-07 19:05 (Asia/Shanghai)
+Updated: 2026-09-14 (Asia/Shanghai)
+
+## 2026-09-14 T161 官方模型目录与选择器闭环完成
+
+- 任务范围：仅完成 T161；未进入 T160 的目标供应商真实调用、费用验收或全链路最终审查。
+- 后端目录契约：模型目录统一返回来源类型、来源地址、版本、更新时间、过期标记、目录状态、账号访问状态、实际调用状态、协议和手工模型入口标记。官方 Provider 优先走实时目录；静态列表明确标记为“官方参考快照”，不代表当前账号清单，过期快照会提示重新同步。
+- 手工边界：自定义和本地 Provider 不请求或生成虚假官网模型列表，API 返回 `manual_only`，保留手工模型 ID；Azure 继续保留既有实时目录路径，同时允许部署名称手工输入。
+- 连接测试：目录存在仅标记 `listed`，目录成功不再推断实际可调用；实际探测成功才标记 `callable`；鉴权失败、目录未列出、无可靠目录和网络失败分别保留可区分状态与错误码。
+- REST/前端：`/api/configs/models/catalog/` 与 `/api/configs/models/discover/` 输出上述状态；模型配置页展示来源、目录/账号/模型/调用状态和更新时间，按协议与声明能力过滤，并保留加载、空目录、过期、错误和手工模型入口反馈。新增页面文案均为中文，无新增乱码文本。
+- 变更影响矩阵：`catalog.py` -> 模型目录 REST 与 `ModelConfigView.vue` 选择器；`discover_models` -> 所有供应商目录同步和目录连接测试；`ConnectionTestResult` -> 连接测试 API 与前端结果弹窗；`modelCatalog.js` -> 分页同步元数据；未改变模型配置持久化结构、密钥存储或业务调用签名。旧 `source` 字段保留，新增字段向后兼容。
+- 第一轮专项：T161 目录/状态专项、既有模型发现和协议专项 27/27；覆盖参考快照过期、实时目录、分页、能力标识、自定义/本地手工边界、目录成功不等于实际调用、401/403、无效响应和本机网络错误。
+- 第二轮全量：后端全量 402/402；Django check 通过；`makemigrations --check --dry-run` 无变更；Python compileall 通过；前端 Vite 生产构建通过；`git diff --check` 无 whitespace 错误，仅有既有 CRLF/LF 提示。
+- 真实本地联调：5173/8000 返回 200；未认证目录接口返回 401；管理员真实 API 返回 10 个 Provider（7 个参考快照、3 个手工入口）；自定义 Provider discover 返回 200、`source_kind=manual_only`、`directory_state=manual_only`、模型数 0。Playwright 页面刷新后模型配置、目录、路由、诊断请求均 200，Console 0 错误；页面切换自定义 Provider 显示中文手工入口并未产生持久化数据。
+- 环境/依赖：无新增迁移、第三方依赖、环境变量、密钥或远程变更；未推送 Git；既有开发库中的 2 个模型配置未删除，项目/智能体验收测试数据保持已清理状态。
+- 遗留问题：静态参考快照仍需按供应商官方变更维护；实时目录成功只证明目录接口可访问，实际调用仍须显式执行 inference 测试；T145/T146 台账历史状态仍需在 T160 全链路审查时统一核对。
+- 下一任务：T160 全链路兼容性与真实验收；进入前必须处理 T145/T146 状态一致性并取得目标供应商一次短调用的明确授权；本任务完成后按门禁停止等待确认。
+
+## 2026-09-14 T160 全链路兼容性审计进行中
+
+- 本轮范围：仅执行 T160 的依赖审计、全量回归、迁移/构建检查和本地闭环复核；未修改业务代码，未发送供应商真实模型请求。
+- 依赖审计：T161 已完成；T145 记录了目标服务器的无 Key 网络响应证据，但缺少 Django 与 Celery Worker 运行身份的独立当前证据；T146 的安全校验、错误分层和本地 Mock/REST/前端证据已完成，但真实短调用仍未执行。因此 T145/T146 的任务表状态和历史记录存在口径差异，暂不能将 T160 标记通过。
+- 回归证据：后端全量 402/402；Django check 通过；`makemigrations --check --dry-run` 无变更；Python compileall 通过；前端 Vite 生产构建通过；本地 5173、8000 和 `/api/health/` 均 HTTP 200。
+- 本地业务证据：管理员目录接口返回 10 个 Provider；自定义 Provider 返回 `manual_only` 且模型数为 0；模型配置页关键接口均 200，刷新后 Console 0 错误；项目与智能体测试数据已清理。
+- 未完成门禁：未取得“对指定供应商、指定模型执行一次无业务数据、无自动重试的短调用”明确授权，未验证供应商实际调用成功/失败、费用提示和目标运行身份的最终闭环。
+- 下一步：收到明确供应商与模型授权后，只执行一次最小短调用并记录脱敏结果；若未授权，T160 保持进行中，不将目录 200 或连接测试通过误判为全链路通过。
+
+## 2026-09-14 T160 真实供应商短调用完成，最终审查仍待依赖核准
+
+- 授权范围：用户明确授权使用已保存的 DeepSeek `deepseek-chat` 配置执行一次不含业务数据、最多 16 tokens、无自动重试的短调用；未执行第二次供应商请求。
+- 真实结果：管理员通过本地 REST `POST /api/configs/models/7/test-connection/` 以 `mode=inference` 发起调用，HTTP 200，`ok=true`，`inference_verified=true`，`stage=inference`，`account_access_state=verified`，`model_state=callable`，`model_call_state=callable`，脱敏耗时约 1718 ms；未记录 Key、请求体或响应正文。
+- 链路证据：本地 5173/8000/健康检查、后端 402/402、迁移/compileall/Django check、前端构建和浏览器关键接口/Console 复核均已通过；项目与智能体测试数据保持清理。
+- 变更影响矩阵：本次仅更新本状态记录，真实调用经过既有 `ModelConfigViewSet.test_connection` → `ProviderConnectionTester` → `inference_probe` → DeepSeek OpenAI-compatible transport；未改变模型配置、业务数据或调用代码。
+- 最终状态：T160 的供应商短调用门禁已满足，但 T145/T146 仍存在任务表未勾选、目标服务器 Django/Celery 运行身份缺少独立当前证据和历史记录口径不一致的问题。依据“所有受影响链路必须验证”的契约，T160 暂不标记为验收通过，远程部署继续冻结。
+- 当前本机运行身份证据：8000 由 `python.exe` 进程监听，Windows 所有者为 `B-03-01\\ZhuanZ`；5173 由 Vite 监听；开发配置使用 `CELERY_TASK_ALWAYS_EAGER=True`，未发现独立 Celery Worker/Beat 监听进程。该证据仅证明本地开发态，不替代目标部署环境证据。
+- 后续整改：补齐 T145/T146 的目标运行身份与安全/网络证据，统一任务台账后，再进行一次不涉及供应商调用的最终文档审查。
+
+## 2026-09-14 T159 Model call observability and frontend diagnostics completed
+
+- Scope: completed T159 only. The shared routed and legacy fallback model managers now persist one bounded, credential-free diagnostic per attempt; T160 full compatibility review and authorized provider acceptance remain separate.
+- Backend: added `ModelCallRecord` and migration `configs.0007_modelcallrecord`; fields cover request ID, feature/task, route source, capability, fallback flag, status, failure stage, stable error code, retryability, duration, cost reporting state/hint, and bounded trace. No prompt, response, API key, authorization header, proxy credential, or request body is stored.
+- Runtime: instrumented `ModelManager.execute_routed` and `execute_with_fallback`. Primary and explicitly allowed fallback attempts share one request ID; route/capability blocks are recorded before any provider call; diagnostic persistence failures do not break the business call.
+- REST/frontend: added admin-only `GET /api/configs/models/call-records/` with safe filters and a model configuration workbench panel showing request/feature, effective route, outcome, timing/cost state, retry boundary, and recent trace. Empty, service-failure, and retry states are rendered explicitly.
+- Impact matrix: `ModelManager` -> requirement analysis, case generation/review, agent execution, and future report callers; `ModelCallRecord` -> configs migration/admin diagnostics API; diagnostics API -> `ModelConfigView.vue` and `modelCalls.js`; existing `ModelUsageRecord` aggregation remains unchanged. Existing manager signatures remain compatible; `request_id` is optional.
+- First round: T159/configs routing and legacy fallback focused tests 28/28, including success, explicit fallback, blocked route, sensitive-field exclusion, 401, and 403.
+- Second round: backend full regression 396/396; Django check passed; `makemigrations --check --dry-run` reported no changes; compileall passed; frontend Vite production build passed; `git diff --check` reported no whitespace errors (only existing CRLF/LF notices).
+- Real local integration: migration `configs.0007_modelcallrecord` applied; 5173/8000 returned HTTP 200; authenticated admin browser loaded the diagnostics panel; `GET /api/configs/models/call-records/?limit=30` returned 200 and rendered both a real local `ModelManager.execute_with_fallback` diagnostic and a completed sanitized acceptance fixture with route, duration, cost state, and trace; after fresh login, the browser Console had 0 errors and model APIs were all 200.
+- Environment/dependencies: one database migration added; no new package, environment variable, credential, or remote change; no Git push.
+- Remaining: T160 must perform the full compatibility/acceptance review; cost totals still depend on future provider usage reports and are deliberately shown as not reported when unavailable.
+- Next task: T160 full-chain compatibility and real acceptance; stop here and wait for confirmation.
+
+## 2026-09-14 T158 Embedding/RAG 能力边界与接入门禁完成
+
+- 任务范围：仅完成 T158 的能力边界和接入门禁；未实现供应商 Embedding Provider、pgvector、混合检索、Rerank 或完整 RAG 工作台，这些仍属于阶段24 T133-T144。
+- 后端：新增 `EmbeddingPolicyService`，将 `knowledge_model` 路由、Embedding 能力、显式执行模式和稳定错误码统一起来；生产默认 provider 路径在未配置、能力不匹配或 Provider 未接入时安全阻断；`HashVectorizer` 仅允许显式 `offline_test` 且仅在 DEBUG 环境使用，并写入模式、模型和维度元数据。
+- REST：新增 `GET /api/knowledge-search/policy/` 能力诊断；文档索引和知识检索使用 DRF 请求 Serializer，要求显式 provider/offline_test 模式；未配置或能力不匹配返回可行动的 `code` 和脱敏策略信息。
+- 智能体链路：没有项目知识库引用时跳过检索，避免无意义 Embedding 调用；配置 `knowledge_search` 工具但没有知识库或 Provider 不可用时明确失败，不绕过项目边界。
+- 前端：知识库工作台加载并展示 Embedding 能力状态、模型类型不匹配和运行时未接入提示；索引/检索显式请求 provider 模式，保留服务失败和重试反馈。
+- 变更影响矩阵：`EmbeddingPolicyService` → 知识库索引/检索 REST、智能体规划节点、`knowledge_search` 工具；知识请求 Serializer → 文档索引和搜索接口；Embedding policy API → `KnowledgeView.vue` 状态提示；旧 `HashVectorizer` 直接 Python 调用 → 保留为测试/迁移兼容路径。覆盖正常诊断、无路由、能力不匹配、显式离线、401、403、空知识库和旧检索调用方。
+- 第一轮专项：T158 与受影响知识/智能体调用方专项 28/28；覆盖生产门禁、显式离线模式、项目隔离、错误边界、401/403。
+- 第二轮全量：后端全量 392/392；Django check 通过；`makemigrations --check --dry-run` 无变更；Python compileall 通过；前端 Vite 生产构建通过；`git diff --check` 无 whitespace 错误，仅保留既有 CRLF/LF 提示。
+- 真实本地联调：前端/后端 5173/8000 返回 200；浏览器知识库页显示 Embedding 门禁提示；真实 `GET /api/knowledge-search/policy/` 返回 200；真实 provider 检索在当前 chat 模型路由下返回 400 和 `model_capability_mismatch`；新浏览器页 Console 错误 0。
+- 环境/依赖：无新增数据库迁移、第三方依赖、环境变量、密钥或远程变更；未推送 Git。旧 T027 API 测试改为显式 `offline_test`，避免把历史兼容测试误当作生产 RAG。
+- 遗留边界：实际 Embedding Provider、固定维度/版本索引、pgvector/FTS 混合检索、引用和成本治理仍需阶段24 T133-T144；当前知识库页面会明确阻断，不能把本地 HashVectorizer 结果标记为生产 RAG。
+- 下一任务：T159 模型调用可观测性与前端反馈；已完成并记录在本文件顶部。
+
+## 2026-09-14 T157 智能体模型执行闭环与真实浏览器验收完成
+
+- 任务范围：仅完成 T157；在既有 AgentGraph 确定性路径旁增加项目级受控模型执行路径，未进入 T158/T159/T160。浏览器已完成一次明确授权的真实短调用，模型调用和结构化结果返回成功。
+- 后端：新增 `AgentExecution` 持久化审计记录、受控 Celery 任务、模型路由与结构化 JSON 调用、超时边界、暂停/取消/恢复控制和可重试错误；只允许显式配置且平台白名单内的 `knowledge_search`，所有其他模型工具请求直接阻断；知识库 ID 先按项目和启用状态过滤。
+- REST：新增 `POST /api/agents/:id/execute/`、`/api/agent-executions/` 查询以及 pause/cancel/resume 控制动作；项目成员可执行，viewer 只能读取，项目外用户不可发现，匿名请求返回 401。
+- 前端：项目智能体卡片新增 Execute 入口和执行状态面板，展示状态、阶段、脱敏路由、结果、失败重试提示和审计轨迹；加载、空数据、字段错误、401/403、服务失败均保留反馈路径。
+- 变更影响矩阵：`AgentGraph.invoke` → 既有确定性图测试与新模型执行分支；`AgentExecutionService` → Celery 任务、Agent execute REST、execution 控制 REST；`AgentExecution` → serializer、项目隔离查询和工作台面板；`agents.js` → `ProjectAgentView.vue` 执行入口。已验证旧图路径、执行成功/失败/工具阻断/暂停恢复、权限边界、迁移和构建。
+- 第一轮专项：T157 专项与旧 AgentGraph 回归 7/7；Django check、迁移生成/一致性、Python compileall 通过。
+- 第二轮全量：后端 `manage.py test` 386/386；本地迁移 `agents.0002_agentexecution` 已应用；前端 Vite 生产构建通过；`git diff --check` 仅有既有 CRLF/LF 提示，无 whitespace 错误。
+- 本地联调：`http://127.0.0.1:8000/`、`/api/health/`、`http://127.0.0.1:5173/` 返回 200；重新登录后项目/API 请求均 200，创建启用智能体返回 201，Execute 入口和弹窗可见，空输入显示字段错误；带 `interrupt_signal=pause` 的本地预检返回 201，重新打开弹窗显示 Paused 和 Audit trace；当前浏览器控制台无阻断性错误。真实短请求返回 `Completed`，`phase=completed`，Audit trace 包含 `model_call=completed` 和 `graph=completed`，结果区域返回结构化 JSON。
+- 环境/依赖：新增 1 个 Django 迁移；未新增第三方依赖、环境变量、密钥或远程变更；未推送 Git。新增后端 T157 文件源码无乱码字符。
+- 遗留边界：本地真实模型短调用已验收通过；本地验收产生的 T157 测试智能体和暂停/失败/成功记录保留在当前开发库；阶段 27 任务表中 T155B/T156 的历史状态标记与归档记录仍存在不一致，未在本任务顺带修改。
+- 下一任务：T158 Embedding/RAG 能力边界与接入门禁；本任务只处理能力标识、维度/版本校验、敏感数据策略和接入门禁，不扩展为完整 RAG 二期实现。
+
+## 2026-09-10 今日归档与下次续接入口
+
+- T155B 补缺整改已完成并通过专项 28/28、后端全量 374/374、前端测试 12/12、前端构建和本地服务检查。
+- 当前未完成项：千问真实调用受本机网络限制，`dashscope.aliyuncs.com:443` TCP 连接失败，返回 `tcp_blocked`；这不是需求分析 JSON、分段或 8192 限制问题。
+- 下次续接顺序：先确认后端 Python 进程的外网放行或 `HTTPS_PROXY` 配置，再进行一次短调用验证；未解决网络前不要反复点击深度分析，也不要进入 T157。
+- 本次未新增迁移、依赖、环境变量或远程变更；未推送 Git。工作区保留既有未提交变更。
+
+## 2026-09-10 T155B 补缺整改：清除后再次分析失败可诊断与可恢复
+
+- 任务范围：修复首次分析成功、清除记录后再次分析在第 0 个分段失败时只显示 `model_error`、刷新后没有失败轨迹的问题；不执行真实供应商调用。
+- 后端：模型 fallback 异常保留最后一次底层异常；需求分析透传真实错误码和结构化分段 trace；即使完成 0 个分段，也持久化 `failed` 分析记录，不生成伪造的确定性结果；失败记录不会成为下一次成功分析的数量基线。
+- 前端：刷新后显示结构化分析失败、已完成分段数和错误码；保留手动重试与刷新路径。清除接口继续保留原文和解析证据，分析可直接使用清除前的解析快照。
+- 变更影响矩阵：`ModelFallbackExhausted` → 需求分析/用例生成共享模型调用；`RequirementModelAdapter` → 结构化错误码与 trace；`analyzer.py` → 失败分析持久化、基线比较和需求 REST；`RequirementAnalysisView.vue` → 失败状态展示。已覆盖正常结果、0 段失败、部分完成、重试恢复、清除后原文/证据保留、旧 fallback 和权限边界。
+- 第一轮专项：T155B/T155/T155 模型选择/模型管理专项 28/28；Python 编译、`git diff --check` 通过。
+- 第二轮全量：后端 `apps` 全量 374/374；Django system check、迁移一致性检查通过；前端 Node 测试 12/12；Vite 生产构建通过；本地前后端 HTTP 200。
+- 真实联调边界：仅检查本地页面和接口可达性，没有点击深度分析，没有发送新的供应商请求，未产生新增费用。
+- 环境/依赖：无新增迁移、第三方依赖、环境变量、密钥或远程变更；未推送 Git。
+- 遗留边界：千问供应商本次失败的真实底层原因仍需用户授权 T160 的一次短调用后才能最终确认；当前系统已能保留并展示实际返回错误码和分段轨迹。
+- 下一任务：T157“智能体真实模型执行闭环”；本补缺完成后按门禁停止等待用户验收。
+
+## 2026-09-10 T156 用例生成与评审纵向闭环完成
+
+- 任务范围：完成五轮用例生成、五轮评审、自动化筛选的状态闭环；真实供应商调用仍按 T160 门禁冻结。
+- 后端：生成与评审逐轮记录 `status`、模型状态、错误码、结构化分段轨迹和安全路由证据；模型中途失败时保留失败轮次与部分结果，严格路径不再用确定性结果伪装 `model_verified`；无可用模型时明确标记确定性基线，显式降级标记 `deterministic_fallback`。
+- 共享链路：`RequirementModelAdapter` 将实际执行配置写入脱敏 `model_route`；路由/能力诊断统一转换为 JSON 标量，修复首次响应与刷新后响应不一致的幂等问题。
+- 前端：用例生成工作台增加长任务等待状态、已等待秒数、当前操作重试入口、每轮执行证据、模型/错误码展示和失败记录恢复提示；保留加载、空数据、字段错误、401/403、服务失败与刷新恢复路径。
+- 变更影响矩阵：`RequirementModelAdapter` → 需求分析/用例生成/评审结构化调用；`generator.py` → 生成 REST → `CaseGenerationView.vue`；`reviewer.py` → 评审 REST → 同一工作台；路由 JSON 诊断 → 模型选项接口与历史记录幂等读取。覆盖正常、无模型、模型失败、部分结果、旧记录、权限和重试。
+- 第一轮专项：T156 新增专项与 T046/T047/T095/T155B 受影响回归共 28/28；前端 Node 测试 12/12。
+- 第二轮全量：后端 `apps` 全量 369/369；Django system check、迁移一致性、Python 编译、`git diff --check` 通过；前端 Vite 生产构建通过。
+- 真实本地联调：8000/5173 均可访问；重新认证后的用例生成页项目、需求文档、生成记录、生成/评审模型选项接口均 HTTP 200，模型选项返回实际生效模型与路由来源；浏览器唯一首轮认证 401 自动刷新后恢复 200，未触发生成/评审按钮，未发起真实供应商调用。
+- 环境/依赖：无新增迁移、第三方依赖、环境变量、密钥或远程变更；未推送 Git。
+- 遗留边界：真实供应商成功/失败、费用、超时和长输出仍需 T160 明确授权；当前工作台历史记录来自此前失败尝试，未借本次验证伪造成功结果。
+- 下一任务：T157“智能体真实模型执行闭环”；按任务门禁停止等待用户验收，不进入 T157 以外任务。
+
+## 2026-09-10 T155B 需求分析结果可重复性与覆盖完整性整改完成
+
+- 任务范围：完成 T155B，解决清除记录后重新分析数量大幅波动却仍被显示为成功的问题；已同步 `PRD_V5.0.md` 第 21.8 节、`TASKS_V5.0.md` 阶段27任务依赖、`TECH_ARCH_V5.0.md` 稳定性边界和 `LLM_CALL_CHAIN_REMEDIATION_PLAN.md`。
+- 后端数据与服务：`RequirementAnalysis` 新增源指纹、分析指纹和 `complete/partial/needs_review/failed` 完整性状态；`RequirementDocument` 新增安全分析基线；清除记录时保留最近一次不含原文的基线摘要，下一次分析可跨清除比较。
+- 覆盖校验：新增 `stability.py`，按解析证据 ID 统计已覆盖、未覆盖和未提供引用的分析项；分段轨迹记录证据 ID；同一基线下任一结果集合下降 20% 及以上会生成差异摘要并标记待复核，不能静默视为等价完整结果。
+- 下游门禁：模型验证结果为 `partial` 或 `needs_review` 时，禁止进入用例生成；确定性证据基线仍按既有安全降级路径运行，并继续显示未进行真实模型验证的提示。
+- 前端闭环：需求分析页展示完整性状态、证据覆盖、数量下降提示和清除后保留基线说明；旧分析记录若没有新覆盖报告，也会根据持久化状态显示“分析结果待复核”。
+- 变更影响矩阵：`RequirementAnalysis/RequirementDocument` 字段 → 迁移 `0005_requirementanalysis_quality_and_baseline` → `analyzer.py`/`stability.py` → 需求分析 Serializer/REST → `RequirementAnalysisView.vue`；共享分段轨迹影响 `structured_runtime.py`/`RequirementModelAdapter`；质量门禁影响 `case_generation/generator.py`。覆盖历史分析读取、清除幂等、用例生成入口、模型路由和旧记录默认值。
+- 第一轮专项：T155B 稳定性与覆盖专项、T155/T155A/清除记录调用方回归共 14/14 通过；需求分析与用例生成 app 回归 83/83 通过。
+- 第二轮全量：后端全量 372/372；Django system check 通过；`makemigrations --check --dry-run` 无变更；`compileall` 通过；前端 Node 测试 12/12；Vite 生产构建通过；`git diff --check` 通过。
+- 真实本地联调：应用本地 `requirement_analysis.0005` 迁移后，需求工作台加载、项目、需求文档、模型选项接口均 HTTP 200；页面展示“分析结果待复核”和已有分段状态；最终干净重载 Console 0 错误、0 警告。首次联调出现的未应用迁移 500 已修复并复验；未发起新的真实供应商模型调用。
+- 环境/依赖：新增 1 个 Django 数据库迁移；未新增第三方依赖、环境变量、密钥或远程变更；本地开发数据库已应用迁移。
+- 遗留边界：模型仍可能生成语义不同但结构合法的候选结果；T155B 已阻止低覆盖结果被当作完整结果，但真实供应商重复运行的最终语义一致性、成本和网络表现仍需 T160 明确授权后验收。
+- 下一任务：T156“用例生成与评审纵向闭环”；按任务门禁停在 T155B 用户验收，不推送远程 Git。
+
+## 2026-09-10 T155 深度分析等待状态补充与结果稳定性审计
+
+- 等待状态：需求分析页增加处理中提示、已等待时长和 30 秒后的长任务说明；当前后端为同步分段调用，尚未返回前不能显示真实的 `x/y` 分段进度，避免伪造进度。
+- 已确认问题：清除记录后再次分析会重新调用模型。`plan_structured_segments` 按证据分组并重复携带正文，`execute_structured_segments` 逐段调用，`merge_structured_payloads` 只做结构合并/精确去重；没有稳定结果缓存、随机种子、固定实体清单或完整覆盖校验。`temperature=0` 只能降低随机性，不能保证供应商跨次输出一致。
+- 影响：同一需求可能出现模块、功能点、联合场景和测试点数量明显波动；合法 JSON 不等于完整抽取，当前结果不能把较少数量直接视为准确覆盖。
+- 未关闭项：需单独设计“结果可重复性与覆盖完整性”整改，至少增加稳定输入指纹/可选结果复用、证据覆盖清单、遗漏检测、截断/不完整标记和重复运行对比；在该问题解决前，不将不同分析次数的数量视为可比基准。
+- 当前验证：前端 Vite 构建通过，Node 测试 12/12；未发起新的供应商模型调用。等待状态改动完成后暂停，不进入新的业务任务。
+
+## 2026-09-10 需求分析清除记录功能完成
+
+- 功能范围：新增“清除分析记录”入口和二次确认；只删除当前需求文档的深度分析历史及视觉分析报告，保留需求原文、文件、解析证据和已有用例生成记录。
+- 后端闭环：新增事务服务 `RequirementAnalysisRecordService.clear_records` 与 `POST /api/requirement-documents/:id/clear-analysis/`；清除后文档回到“已上传”状态，重复清除幂等，查看者/无权限用户返回 403。
+- 前端闭环：需求分析工作台显示清除按钮、保留范围提示、成功反馈、失败反馈和空记录禁用状态；不替用户点击现有文档的清除按钮。
+- 变更影响矩阵：需求分析文档 → 清除记录 Service → REST action → `RequirementAnalysisView.vue`；用例生成历史只读保留，原文解析和模型路由不受影响。
+- 第一轮专项：清除成功、原文/解析证据保留、视觉报告清空、用例记录保留、重复清除幂等、查看者 403，共 17/17 通过。
+- 第二轮全量：后端 `apps` 全量 361/361；Django check、迁移检查、compileall、前端 Node 测试 12/12、Vite 构建和 `git diff --check` 通过。
+- 真实本地联调：临时文档页面点击清除并确认，REST HTTP 200，页面显示“分析记录已清除（1 条）”；临时文档随后已删除；新浏览器页关键 API 均 HTTP 200，Console 错误 0、警告 0。
+- 下一任务：T156“用例生成与评审闭环”；本功能完成后按门禁停止等待用户验收，不推送远程 Git。
+
+## 2026-09-10 T155 深度分析前端超时修复
+
+- 根因：需求分析采用 T155A 分段结构化调用；当前“恐龙”文档实际执行了 9 个分段。前端 Axios 全局超时仅 10 秒，后端仍在正常处理时浏览器已先中断请求，页面因此只显示“操作失败，请重试”，并掩盖了后端最终保存的结果。
+- 修复：需求深度分析和截图视觉分析使用独立的 10 分钟请求超时，不再沿用普通查询的 10 秒超时；若仍达到等待上限，页面明确提示后端可能仍在处理，并引导刷新查看已保存的部分结果。
+- 真实本地复核：刷新需求工作台后，当前文档显示 `deepseek · requirement_analysis · 已验证`，结构化分段显示 `9 / 9` 完成；`auth/me`、项目、需求文档、模型选项均 HTTP 200，Console 错误 0、警告 0。
+- 影响范围：`frontend/src/api/requirements.js` 的深度/截图调用、`frontend/src/api/caseGeneration.js` 的用例生成/评审调用 → 对应工作台错误反馈；后端路由、数据结构、供应商 Key 和迁移未改变。
+- 验证：后端 T155/T155A/T043/T154 相关专项 20/20；后端 `apps` 全量 358/358；前端 Node 测试 12/12；Vite 生产构建通过；`git diff --check` 通过。
+
+## 2026-09-10 T155 需求分析与视觉调用闭环完成
+
+- 实现内容：需求深度分析继续使用 T154 实际生效路由和 T155A 共享结构化分段运行时；覆盖模型验证、部分完成、失败和确定性基线状态，记录安全的模型路由、调用阶段、错误码、分段轨迹和可重试边界。联合功能识别明确标记为确定性证据方法，不伪装成模型调用。
+- 视觉闭环：新增视觉模型结构化输出校验，要求元素、文本块、区域和测试点保持唯一 ID 与证据引用；截图分析优先走视觉模型，未配置视觉模型时只返回明确的 OCR 基线；截图报告持久化到 `RequirementDocument.visual_analysis_report`，刷新后仍可查看。
+- REST 状态：模型调用失败返回安全错误码、`failed/partial`、`retryable`、文档状态和已保存的部分分析；视觉失败同样保留失败报告。新增迁移 `requirement_analysis.0004_requirementdocument_visual_analysis_report`，未新增第三方依赖或环境变量。
+- 前端闭环：需求分析页恢复持久化视觉报告，显示模型/基线结果、置信度、错误码和调用阶段；失败时提供当前操作重试和页面刷新；保留加载、空数据、权限、服务错误和能力不匹配提示。
+- 变更影响矩阵：`RequirementAnalysisError`/`RequirementModelAdapter`/`analyze_requirement_document` → 需求分析 REST `analyze` → `RequirementAnalysisView.vue`；`analyze_visual`/视觉报告字段 → `screenshot-analysis` REST → 截图分析入口和刷新状态；`identify_document_linkages` → 联合识别 REST/分析覆盖报告。调用方覆盖旧的确定性分析、T155A 分段运行时、模型路由、项目权限、历史分析记录和前端认证。
+- 第一轮专项：T155 需求分析/视觉 REST、模型结构化校验、失败部分持久化、路由信息、截图文件边界及 T155A/T043/T049/T094/MR-03 受影响回归共 31/31 通过。
+- 第二轮全量：后端 `apps` 全量 358/358；Django system check 通过；`makemigrations --check --dry-run` 无变更；`compileall` 通过；`git diff --check` 通过；前端 Vite 生产构建通过。
+- 真实本地联调：重新认证 `platform_admin` 后，需求分析工作台加载成功；干净浏览器页的 `auth/me`、项目、需求文档、模型选项请求均 HTTP 200，Console 错误 0、警告 0。另以临时 OCR 文档验证截图入口：当前全局文本模型被明确阻断为 `model_capability_mismatch`（400），页面显示重试入口且未发起供应商请求；临时数据已通过页面删除。未点击真实模型分析/视觉推理按钮，避免在 T160 授权前产生供应商费用。
+- 边界证据：专项测试覆盖正常模型结果、无效证据、供应商失败、部分结果、无视觉文件、项目权限和匿名 401；现有回归覆盖空输入、字段错误、403、跨项目隔离和 OCR 失败。真实供应商长输出、费用和目标环境网络仍属于 T160 授权验收。
+- 下一任务：T156“用例生成与评审闭环”；按门禁停止等待用户确认，不进入 T157/T161，不推送远程 Git。
+
+## 2026-09-10 T155A 长输入与长结构化结果分段生成闭环完成
+
+- 实现内容：新增 `backend/core/llm/structured_runtime.py`，提供预算分段、证据/段落边界切分、结构化截断后的受控拆段、最大分段上限、确定性合并、ID 冲突修复、已知引用重写和段级轨迹；`structured_max_tokens=8192` 仍只是单段上限，不再被当作任意长度保证。
+- 调用方接入：`RequirementModelAdapter` 统一接入共享运行时；需求分析按证据/正文分段；用例生成按功能点分段；用例评审按用例分段；现有无真实结构化模型节点的报告/智能体不伪造接入，保留给后续 T156/T157 的真实业务闭环。
+- 失败恢复：输出长度截断会拆分当前段而不是无限重试；中途服务失败/解析失败会保留已完成段、部分需求分析、已有用例或评审问题，并标记 `model_partial`/`partial`，前端明确提示不能视为完整模型验证；原生 Anthropic/Google 长度结束原因已统一归一化。
+- REST/前端闭环：复用现有需求分析和用例生成 REST 的 JSON 报告字段返回段状态与轨迹；需求分析页、用例生成页增加完整合并/部分完成提示。未新增数据库表、迁移、第三方依赖或环境变量。
+- 变更影响矩阵：`StructuredBatchExecutor` 等价共享运行时 → `RequirementModelAdapter` → 需求分析/用例生成/用例评审 → 既有 REST Serializer/工作台；`parse_openai_json_response`/原生协议归一化 → OpenAI-compatible、Anthropic、Google 结构化调用。覆盖正常、空数据、字段错误、输出截断、无效 JSON、服务失败、旧调用方、ID 冲突、引用重写和部分结果持久化。
+- 第一轮专项：T155A 共享运行时、适配器和历史调用方共 40/40；补充原生协议长度原因及段级合并后专项 31/31 通过。
+- 第二轮全量：后端 `apps` 全量 352/352；Django system check 通过；`makemigrations --check --dry-run` 无变更；`compileall` 通过；`git diff --check` 通过；前端 Vite 生产构建通过。
+- 真实本地联调：重新登录 `platform_admin` 后，需求分析页面的 `auth/me`、项目、需求文档、模型选项请求均 HTTP 200；用例生成页面的项目、需求文档、生成记录、生成/评审模型选项请求均 HTTP 200；两页最终浏览器 Console 错误 0，未触发真实供应商推理调用。
+- 遗留边界：当前未授权新的真实 DeepSeek/其他供应商业务调用；供应商费用、真实长输出和目标环境网络仍按 T160 授权验收。T155A 完成的是共享 Mock/本地链路能力，不宣称 T155/T156/T157 已完成。
+- 下一任务：T155“需求分析与视觉调用闭环”；按门禁停止等待用户确认，不进入 T156/T161，不推送远程 Git。
+
+## 2026-09-10 T155A 长输入与长结构化结果分段生成需求立项
+
+- 立项原因：T155 将结构化输出上限从 2048 提高到 8192 并增加截断诊断，只能降低短请求失败率；超过单次预算的需求、测试用例、评审和报告仍可能截断，因此问题属于共享模型调用运行时，不是需求分析页面独有缺陷。本节为 T155A 的历史立项记录，当前完成情况以上方完成记录为准。
+- 文档同步：新增 `PRD_V5.0.md` 第 21.7 节；新增 `TECH_ARCH_V5.0.md` 第 22.6 节；任务台账新增补充任务 T155A；同步 `LLM_CALL_CHAIN_REMEDIATION_PLAN.md`、`CONTRACT_ENFORCEMENT.md` 和本状态记录。
+- 任务边界：T155A 只做预算规划、稳定边界分段、受控续接/截断、幂等执行、结构化合并、部分完成/可恢复失败状态及共享调用方接入；覆盖需求分析、用例生成/评审、报告和智能体结构化输出。立项时尚未开始编码，后续已由上方完成记录闭环。
+- 变更影响矩阵：共享结构化运行时 → 需求分析、用例生成、五轮评审、报告、智能体 → REST 状态/重试接口 → 对应前端工作台和审计/费用反馈；必须覆盖正常、空数据、字段错误、401、403、超时、服务失败、输出截断、旧数据/旧接口、取消/恢复和幂等重试。
+- 验证记录：立项时仅修改需求、架构、任务、契约和状态文档，未新增代码测试；后续 T155A 的专项、全量、构建和浏览器联调证据见上方完成记录。
+- 下一步与门禁：立项时按新依赖先执行 T155A；该任务现已完成，下一任务为 T155。T155A 完成前不进入 T156，也不把 T155 的局部修复宣称为长内容全链路完成；不执行 T161 或 T160 的真实供应商调用。
+
+## 2026-09-10 T155 需求分析 JSON 响应与测试方式状态修复（本次范围）
+
+- 结构化响应修复：`configs.services.parse_openai_json_response` 现在安全移除 DeepSeek 常见的 `<think>` 片段和 Markdown JSON 包裹，并可从带简短前后说明的响应中恢复首个 JSON 对象；恢复后仍由需求分析适配器执行完整字段、唯一 ID、证据引用和业务契约校验，普通文本、数组和无法解析的内容仍失败。
+- 截断诊断补充：需求分析结构化输出默认上限由 2048 提高到 8192，可通过 `structured_max_tokens` 或既有 `max_tokens` 参数覆盖；识别供应商 `finish_reason=length/max_tokens` 后返回明确的“模型输出达到长度上限”错误，避免误导为 Key 或路由故障。
+- 测试方式修复：`ModelConfigView.vue` 按模型保存最近选择的 `catalog`/`inference` 测试方式到浏览器本地存储；选择实际调用测试后关闭并重新打开同一模型，仍恢复“所选模型实际调用（可能产生少量费用）”，存储失败不会阻断测试。
+- 变更影响矩阵：`parse_openai_json_response` → OpenAI-compatible 结构化运行时 → 需求分析、用例生成/评审的 JSON 适配器；`testMode`/测试连接入口 → `testModelConnection` → 模型配置页面弹窗。密钥、路由、供应商协议、模型配置数据库字段和连接测试 API 未改变。
+- 链路测试证据：前端选择实际调用模式、关闭弹窗、再次打开同一 DeepSeek 模型后模式保持；无授权 API 探针继续返回 401；管理员页面配置接口 200；最终浏览器 Console 错误 0。
+- 第一轮专项：T155 结构化响应测试、T152/T153 协议回归和需求分析调用方共 21/21 通过，覆盖 `<think>`、Markdown fence、前后说明、后缀文本、非 JSON、JSON 数组和长度截断边界。
+- 第二轮全量：后端全量 354/354；Django system check 通过；`makemigrations --check --dry-run` 无变更；`compileall` 通过；前端 Vite 生产构建通过；8000/5173 健康检查均 200。
+- 遗留边界：本轮未发起新的真实 DeepSeek 计费调用；供应商实时输出仍需在 T160 授权验收中验证。T155 中视觉真实调用闭环尚未因本次两个问题而提前扩展，下一步仍停留在 T155 范围内；不进入 T156、T161。
+
+## 2026-09-10 T154 统一路由解析与能力预检完成
+
+- 统一模型路由结果：`configs.routing` 现在返回安全的候选模型、来源（operation/feature/global/legacy/backup）、能力契约、是否允许备用和明确失败原因；显式路由通过 `validate_model_capability` 做能力预检，不读取或返回密钥。
+- 业务调用链收敛：需求分析、用例生成、用例评审和真实 `ModelManager` 均按临时选择→功能路由→全局路由→兼容的 legacy 默认顺序解析；移除“任意启用模型即可用”的业务判断。智能体本轮仅将 options 接口接入同一预检，真实模型执行留在 T157。
+- REST/前端闭环：路由矩阵、需求分析模型选项、用例生成/评审模型选项和智能体 options 返回统一 `route` 诊断；现有模型配置工作台、需求分析页和用例生成页继续显示当前生效模型/来源及能力不匹配错误。
+- 变更影响矩阵：`ModelRouteResolver`/`ModelManager.execute_routed` → 需求分析适配器与 analyzer、用例生成/评审 → 对应 REST model-options 和路由矩阵 → `RequirementAnalysisView.vue`、`CaseGenerationView.vue`、`ModelConfigView.vue`；旧的显式备用策略、权限、密钥加密、provider 协议适配和确定性基线未被绕过。新增的 agent options 只做能力筛选与诊断，不改变 T157 前的确定性 AgentGraph。
+- 第一轮专项：T154 路由/能力/显式备用专项及受影响调用方回归 203/203；覆盖正常路由、空路由、显式模型、能力不匹配、显式跨供应商备用、调用失败和旧测试夹具兼容。初次回归发现 4 个旧夹具依赖“任意活动模型”，已改为显式功能路由后复测通过。
+- 第二轮全量：后端全量 349/349；Django system check 通过；`makemigrations --check --dry-run` 显示 No changes detected；`compileall` 通过；前端 Vite 生产构建通过。
+- 真实本地联调：管理员页面刷新后，路由矩阵与用例模型选项接口均 HTTP 200；响应包含 `route.candidates`、`capability_contract`、`effective_source` 和 `failure_reason`。当前工作台显示文本路由生效为平台全局模型，截图/知识库能力不匹配显示可行动错误。无 Authorization 的本地探针返回 401；刷新后的浏览器页面 Network 关键请求 200，Console 错误 0。
+- 链路测试证据：未配置显式业务路由时，活动模型不会被 `ModelManager.execute_routed` 隐式选中；备用模型只有在策略 `allow_fallback=true` 时进入候选；真实模型调用和计费短调用仍留在 T160。未新增依赖、环境变量或数据库迁移，未远程部署、提交或推送 Git。
+- T154 完成；下一任务为 T155。按任务门禁暂停，等待决策者确认后继续。
+
+## 2026-09-10 T152 OpenAI-compatible 协议一致性完成
+
+- 统一连接探测与业务结构化调用：Qwen、DeepSeek、OpenAI、Azure、custom/local 的聊天请求共用 payload、鉴权、超时、响应提取和 JSON 解析边界；Qwen 默认关闭 thinking，DeepSeek 默认发送 `thinking.type=disabled`，OpenAI/Azure 使用 `max_completion_tokens`，其余兼容供应商使用 `max_tokens`，结构化调用统一声明 JSON object。
+- 增加结构化调用超时配置 `structured_timeout_seconds` 的 1-120 秒边界，默认 30 秒；响应支持标准字符串、multipart 文本和 fenced JSON，错误只返回脱敏的协议/网络/解析原因，不回显密钥或模型内容。
+- 变更影响矩阵：`configs.services.openai_compatible_chat` → `inference_probe`（连接测试）和 `requirement_analysis.OpenAICompatibleRuntime`（需求分析结构化调用）→ `ModelConfigViewSet` 测试连接 REST、需求分析服务 → 模型配置页和需求分析调用方；旧配置字段、鉴权头、路由能力筛选、权限边界和非兼容协议入口未跨任务改动。
+- 第一轮专项：T152 协议与调用方兼容测试、模型发现回归、需求分析适配器回归共 25/25 通过；覆盖 Qwen/DeepSeek/OpenAI/Azure 请求体、JSON/multipart/fenced 解析、超时上限、图文消息和错误边界。
+- 第二轮回归：后端 `apps` 全量 334/334；Django system check 通过；`makemigrations --check --dry-run` 无变更；前端 Vite 生产构建通过；未新增依赖、环境变量或迁移。
+- 真实本地联调：管理员重新登录后，`/api/configs/models/`、`/api/configs/models/catalog/`、`/api/configs/routing-policies/matrix/` 均 HTTP 200，返回模型 2 个、路由矩阵 8 行；新浏览器页加载模型配置工作台时 Console 错误 0，Network 中 `auth/me` 与三个配置接口均 200。未执行外部供应商计费短调用，真实供应商短调用留在 T160 验收范围。
+- 链路测试证据：匿名请求仍返回 401（本轮一次无 Authorization 的浏览器探针）；带管理员 JWT 的真实页面请求返回 200；测试中既有密钥脱敏、字段错误、网络失败、旧接口和权限边界继续通过。未执行远程部署、Git 提交或推送。
+- T152 完成；下一任务为 T153。继续开发前等待决策者验收确认。
+
+## 2026-09-10 T153 非 OpenAI 协议适配与显式阻断完成
+
+- 按供应商协议拆分调用边界：Anthropic 使用 Messages `/messages`、顶层 `system` 和原生图片 block；Google Gemini 使用 `:generateContent`、`systemInstruction`、`contents`/`parts`、`responseMimeType=application/json` 和 `inlineData`；百度与智谱使用各自声明的 Chat Completions 地址并归一化 choices 响应。实现依据供应商官方接口说明：[Google GenerateContent](https://ai.google.dev/api/generate-content)、[百度千帆 Chat Completions](https://cloud.baidu.com/doc/qianfan-api/s/3m7of64lb)、[智谱 HTTP API](https://docs.bigmodel.cn/cn/guide/develop/http/introduction)。
+- 目录能力声明收窄：百度、智谱当前仅展示已适配的 chat；Anthropic、Google 只展示当前运行时已适配的 chat/vision（Google 另含 embedding）；OpenAI-compatible、Azure、custom/local 保留各自已声明类型。模型配置表单显示实际协议名称，避免把未适配媒体能力伪装成可用。
+- 变更影响矩阵：`catalog.PROVIDER_TYPES/PROVIDER_PROTOCOLS` → 模型目录 REST → `ModelConfigView.vue` 的供应商/能力选择；`native_structured_chat` → 需求分析 `OpenAICompatibleRuntime` → 结构化结果解析；`inference_probe` → 测试连接 REST → 模型配置页的实际调用测试。旧的凭据加密、路由矩阵、权限和兼容协议请求字段保持回归。
+- 第一轮专项：T153 原生协议、T152 兼容协议、模型发现和需求分析调用方共 31/31 通过；覆盖正常、图片输入转换、认证头、路径、JSON 响应、能力不匹配前置阻断和无供应商请求副作用。
+- 第二轮回归：后端 `apps` 全量 340/340；Django system check 通过；`makemigrations --check --dry-run` 无变更；前端 Node 测试 12/12；Vite 生产构建通过。
+- 真实本地联调：管理员页面加载模型配置工作台，目录 REST HTTP 200 返回协议和能力字段；新浏览器页 `auth/me`、模型列表、供应商目录、路由矩阵均 HTTP 200，Console 错误 0；打开“添加模型”并切换 Anthropic 后显示 `Anthropic Messages`，模型类型仅为 chat/vision。
+- 链路测试证据：无 Authorization 的本地目录探针仍为 401；管理员 JWT 目录请求为 200；专项验证百度 vision 在请求前返回 `capability_not_supported` 且 `urlopen` 未调用。未执行真实供应商计费调用，保留至 T160；未新增依赖、环境变量或数据库迁移，未远程部署、提交或推送 Git。
+- T153 完成；下一任务为 T154。完成报告后暂停等待决策者确认。
+
+## 2026-09-10 T151 浏览器 Console/Network 与用户验收通过
+
+- 使用本地管理员 `platform_admin` 通过 Playwright MCP 登录 `http://127.0.0.1:5173/`，进入 `/workspace/models` 完成模型配置工作台验收；凭据未写入项目文件、配置或日志。
+- 页面真实加载 2 个模型配置和 8 条路由矩阵；模型列表、官方目录和路由矩阵请求均 HTTP 200；页面正确展示文本模型能力和视觉/向量能力不匹配提示。
+- 真实操作验证 DeepSeek“禁用”确认提示、停用状态与启用数量刷新、路由重新计算、再次启用和原状态恢复；两次 PATCH 均 HTTP 200，最终两个模型均恢复为启用。
+- 浏览器 Console 错误 0；Network 未发现未解释的关键请求失败、凭据泄露或状态不同步。T151 代码、REST、自动化测试、真实短调用和浏览器用户验收全部通过。
+- T151 完成；下一任务为 T152。未执行远程部署、依赖安装、环境变量变更、数据库迁移或 Git 推送。
+
+## 2026-09-10 模型配置启用/禁用入口补充（T151 范围内）
+
+- 用户验收前补充模型接入列表的“启用/禁用”操作；复用现有 `PATCH /api/configs/models/:id/` 的 `is_active` 字段，不新增数据库迁移、依赖或环境变量。
+- 禁用操作增加明确确认提示，说明该模型将不再参与新的任务路由；成功后刷新模型状态、启用数量和路由矩阵；启用操作可直接恢复。
+- 变更影响矩阵：`ModelConfigView.vue` → `updateModelConfig` → `ModelConfigViewSet`/`ModelConfigSerializer` → `ModelRouteResolver`；覆盖模型列表状态、路由候选、管理员权限和错误提示。删除、连接测试、用量和编辑链路未改变。
+- 第一轮专项：`apps.configs.tests_t010`、`tests_mr01_routing`、`tests_mr02_api` 共 17/17 通过。
+- 真实本地 API：DeepSeek 配置禁用 HTTP 200、列表状态为 `is_active=false`，重新启用 HTTP 200，最终状态恢复为启用；真实页面入口仍为模型配置列表。
+- 第二轮回归：后端 `apps` 全量 331/331；Django system check 通过；`makemigrations --check --dry-run` 无变更；前端 Node 测试 12/12；Vite 构建通过。
+- 当前结论：启用/禁用功能实现、REST 闭环和自动化验证完成；未开始 T152。T151 最终标记仍等待浏览器 Console/Network 用户验收门禁。
+
+## 2026-09-10 T151 真实 DeepSeek 验收与回归复核
+
+- 本次仅处理 T151，未开始 T152，未执行远程部署、依赖变更、迁移变更或 Git 推送。
+- 网络恢复：后端已通过 Windows UAC 以管理员权限重启；本机未配置 HTTP/HTTPS 代理。前端 `5173`、后端 `8000` 和 `/api/health/` 均返回 HTTP 200。
+- 真实模型验收：通过本地 REST `/api/configs/models/7/test-connection/` 的 `mode=inference` 对已配置 DeepSeek `deepseek-chat` 发起一次最小 `Reply OK` 调用；响应 HTTP 200，`stage=inference`、`inference_verified=true`、`ok=true`，耗时约 1359ms，未携带项目数据。
+- 第一轮专项：T151 与配置/路由/模型目录专项 35/35 通过。
+- 第二轮回归：后端 `apps` 全量 331/331；Django system check 通过；`makemigrations --check --dry-run` 显示无变更；前端 Node 测试 12/12；Vite 生产构建通过。
+- 真实本地 API 边界：匿名读取模型列表 HTTP 401；管理员模型列表 HTTP 200（2 个模型）；管理员路由矩阵 HTTP 200（8 行，8 行均含 `capability_contract`）；viewer 读取模型列表 HTTP 403；DeepSeek 实际推理 HTTP 200。
+- 变更影响矩阵：统一契约 → 路由解析/候选筛选 → 模型配置 REST/路由矩阵 → `ModelConfigView.vue` 能力展示；自动化调用方、旧配置字段、权限边界和迁移一致性均已回归。
+- 当前结论：T151 的代码、REST、真实供应商短调用、自动化测试和本地 API 边界均已通过；但当前 CUA 仍无浏览器表面（`apps=[]`、`browsers=[]`），无法由本代理完成工作台 Console/Network、页面操作和浏览器用户验收，因此暂不把 T151 标记为最终完成，也不进入 T152。
+
+## 2026-09-09 今日开发进度归档：T151 统一模型运行时契约（部分完成，待验收）
+
+- 今日完成范围：开始执行阶段27的 T151；新增 `backend/apps/configs/contracts.py`，建立统一模型调用契约、能力矩阵、能力校验和旧任务类型兼容映射，覆盖需求分析、用例生成/评审、智能体、报告、截图/视觉和知识模型边界。
+- 后端接入：`configs.routing` 的路由结果携带统一契约；`core.llm.manager` 使用同一能力矩阵筛选模型；路由矩阵 REST 响应新增 `capability_contract`，前端模型配置页展示输入/输出能力及所需模型类型。
+- 影响链路：统一契约 → 路由解析/候选模型筛选 → 路由矩阵 REST → `ModelConfigView.vue` 展示；未改动数据库模型、迁移、依赖、环境变量、密钥和远程部署。
+- 第一轮专项：T151 契约/路由测试 22/22 通过；过程中发现 retrieval 能力映射与旧管理器兼容性问题，已修复并复测通过。
+- 第二轮回归：后端 `apps` 全量（按 `tests*.py` 模式）331/331 通过；Django system check 通过；`makemigrations --check --dry-run` 无变更；前端 Node 测试 12/12 通过；Vite 生产构建通过；`5173` 与后端健康接口均 HTTP 200。
+- 真实本地 API：通过 `5173` 代理完成临时管理员认证、路由矩阵读取和能力契约断言；临时联调账号/数据已清理。这里的 HTTP 200 仅作为传输证据，未据此宣称功能验收完成。
+- 当前结论：T151 代码、REST、前端展示和自动化测试已完成，但暂不标记为完成。当前 CUA 无可用浏览器表面（`apps=[]`、`browsers=[]`，无法打开 IAB），因此尚未完成浏览器 Console/Network 监控、页面操作、错误/重试/权限/边界和用户验收门禁。
+
+### 今日遗漏与未关闭事项
+
+- T151 尚缺：浏览器真实页面验收，重点检查路由矩阵请求、模型配置页无未解释 Console 错误、Network 状态与业务响应一致，以及空数据、能力不匹配、401/403、服务失败和重试反馈。
+- T151 尚缺：在本地配置并明确授权后，用 DeepSeek 或千问完成一次无项目敏感数据的真实短调用；该验证只能证明 AITS 供应商链路，不能替代 Codex 自身的 `chatgpt.com/backend-api/codex/` 会话连接。
+- 阶段27的 T152-T161 均未开始，不能因为 T151 的契约矩阵已接入就提前进入协议适配、统一业务调用或官方模型目录任务。
+- T160 所需的目标服务器/受控代理真实供应商验收仍未执行；本轮没有远程部署、镜像更新、数据库迁移、依赖安装、Git 提交或推送。
+- 历史待处理项继续保留：RAG 二阶段规划待审核，以及状态中已有的页面/真实视觉模型验收、T107-T110/T025/T039 架构依赖和 T145/T146 历史口径复核；本次未删除、未擅自关闭这些事项。
+
+### 下次恢复点
+
+- 仍停留在 T151，不开始 T152。
+- 首先完成浏览器 Console/Network 和工作台用户验收；若用户需要真实模型验证，再使用已配置且获授权的 DeepSeek/千问执行单次脱敏短调用并记录响应业务语义。
+- 验收通过后，补写 T151 完成记录并等待用户明确确认，再按依赖进入 T152。
+
+## 2026-09-09 T150 Skill 业务页面前后端闭环整改
+
+- 实现范围：需求文档 `parse`、深度 `analyze`、截图 `screenshot-analysis` 接入 `SkillExecutionService`；用例生成 `create`、评审 `review` 接入对应内置 Skill；新增“用例评审”内置 Skill 及迁移 `skills.0008_seed_case_review_skill`。
+- 前端闭环：需求分析页和用例生成页读取 REST 返回的 `skill_execution`，显示自动调用的 Skill、版本、完成/失败/等待补充状态和服务消息；未开放第三方源码直接执行，安装页仍只负责校验、审批、安装、回滚和卸载。
+- 变更影响矩阵：`SkillExecutionService` → `SkillManager`/内置 Skill 注册 → 需求分析 REST → `RequirementAnalysisView.vue`；`SkillExecutionService` → 用例生成 REST → `CaseGenerationView.vue`；原有 AgentGraph、Skill 安装与权限审计链路保持不变。`linkages` 和 `select` 仍由确定性业务服务负责，没有伪造不匹配的 Skill 状态。
+- 链路测试证据：专项 `apps.skills apps.agents apps.requirement_analysis apps.case_generation` 150/150；后端全量 332/332；Django check、迁移检查通过；Vite 生产构建通过；真实本地 HTTP 依次验证需求解析 200、深度分析 200、用例生成 201、用例评审 200，四个响应均返回 `skill_execution.status=completed`；联调数据已清理并恢复原模型启用状态。
+- 边界验证：既有需求/用例 API 测试继续覆盖空数据、字段错误、401、403、服务失败和旧数据读取；T150 新增响应断言验证 Skill 状态。性能、APP、接口、脚本等未形成对应业务页面的真实 Skill 闭环，不因本任务提前标记完成；远程部署未执行。
+- 当前状态：T150 实现与自动化/本地联调已完成，待决策者在本地页面刷新后验收；验收前不进入下一业务任务。
+- 任务统计同步：当前台账已纳入阶段27的 T151-T161，为 165 个唯一 `T` 任务 + 7 个唯一 `MR` 任务 = 172 个唯一任务标识；任务表统计口径同步为 173 行，T116 的历史重复行仍只计一次。
+
+## 2026-09-09 模型调用全链路整改计划（阶段27）
+
+- 本次审计确认整改范围较大，不能只修复一个 Qwen 参数或只修复需求分析页面。连接测试、需求分析、视觉分析、用例生成、五轮评审、智能体、Embedding 和后续 RAG 入口存在不同的协议、能力、路由、状态和错误处理路径，必须按统一运行时契约逐条收敛。
+- 已新增独立计划文档 [`doc/LLM_CALL_CHAIN_REMEDIATION_PLAN.md`](LLM_CALL_CHAIN_REMEDIATION_PLAN.md)，将整改拆分为 T151-T161：运行时契约、OpenAI 兼容协议、非兼容协议、统一路由、需求/视觉、用例生成/评审、智能体、官方模型目录、Embedding 边界、观测反馈和最终验收。
+- 已同步 `doc/TASKS_V5.0.md` 阶段27，并新增 T161“官方模型目录与选择器闭环”。该阶段只完成规划和台账，不代表业务代码已修复；当前首个候选任务为 T151，等待决策者审核计划后再开始编码。
+- 新增产品要求：选择任意供应商并填写连接信息后，模型配置页应优先展示该供应商官方目录中的模型名称/模型 ID；没有官方目录 API 时使用带来源、版本和更新时间的官方目录快照。必须区分官网支持、当前 Key 可访问和当前端点可调用，不能把官网全量模型直接标成当前可用。
+- 已确认的当前根因证据：服务器“所选模型实际调用”可通过；本地同一供应商的结构化需求分析请求超时；在相同请求中补齐 Qwen `enable_thinking=false` 后可返回 HTTP 200。说明 Key 和基础网络不是唯一问题，连接测试与业务调用的协议/参数/超时链路不一致是 P0 整改项。
+- 计划边界：不伪造确定性结果为模型验证通过；不允许显式路由失败时静默跨供应商；不在本阶段顺便实现完整 RAG 二期；不执行数据库、依赖、环境变量或远程部署变更。
+- 阶段27门禁：每次只开发一个任务；每个任务均须完成后端 Service→REST→前端→真实本地 API 联调，两轮测试和 `PROJECT_STATUS.md` 记录；T160 的真实供应商调用必须另获明确授权。
+- 2026-09-09 契约补充：HTTP 200/201 只代表传输层状态，不代表业务通过。已将 Console/Network 监控、响应业务语义、持久化/副作用、加载/空/成功/字段错误/401/403/404/409/5xx/超时/网络中断/能力不匹配、重复提交、取消、重试、旧数据兼容和失败恢复写入 `CONTRACT_ENFORCEMENT.md`、核心开发契约、`TASKS_V5.0.md` 和本整改计划；存在未解释控制台错误或未覆盖边界时不得完成任务。
+- 2026-09-09 契约文档链补漏：核心契约原先只引用 PRD、TECH_ARCH、TASKS 和 `.env.example`，存在专项计划、启动审计、项目状态和项目级规则未被强制纳入的结构性遗漏。现已将根目录/`doc` 规则、执行补充、启动审计、状态、任务、PRD、技术架构、环境模板及当前专项方案统一登记；新增需求/任务/架构/环境约束若未同步登记到对应文档，禁止进入编码。
+
+## 2026-09-09 T150 模型调用失败提示与本地网络阻断整改
+
+- 根因判定：服务器“所选模型实际调用”已通过，证明该供应商地址、模型名和 Key 在服务器运行环境有效；本地失败页明确返回 `WinError 10013`，属于 Windows 本机 Django/Python 外连被网络策略拒绝，不是 Key 错误。当前生效模型路由仍以显式配置为准，不因本地失败而偷偷切换供应商。
+- 代码修复：`RequirementModelAdapter` 现在区分“没有可用模型”和“已找到模型但调用失败”；调用失败会列出已尝试的模型，并安全传递 HTTP 401/403、429、超时、DNS/TCP/本机网络策略等可行动原因。`analyze_requirement_document` 不再把真实调用失败写成“已使用确定性基线”；模型调用失败仍不落库、不生成伪造分析结果。
+- 安全边界：错误信息不包含 API Key、Authorization、代理凭据或完整敏感 URL；明确路由仍不绕过策略自动改用其他供应商，避免数据跨供应商外发。
+- 第一轮专项测试：需求分析模型选择/错误链路、确定性分析、网络错误分层 21/21；业务闭环专项 `apps.skills apps.agents apps.requirement_analysis apps.case_generation` 151/151。
+- 第二轮回归：后端全量 333/333；前端 Vite 生产构建通过；本地前端 `5173`、后端 `/api/health/` 均 HTTP 200；无新增依赖、环境变量或数据库迁移；远程部署未执行。
+- 待验收：在本地放行后端进程外连或配置受控代理后，使用“所选模型实际调用”重新验证；服务器已通过的配置不需要因本次提示修复而重置 Key。
+- 本地运行环境复核：普通受限执行环境到供应商 443 被拦截，但高权限同机复核可建立 TCP/HTTPS 并得到供应商预期的 401；已仅重启本地 Django 后端为可出网进程，前端、数据库和配置未改动，健康接口 HTTP 200。该限制属于当前开发代理/沙箱启动边界，不是应用代码或供应商 Key 故障。
+- 进程复核补充：发现旧 Django 自动重载进程与新后端同时监听本地 8000，浏览器因此可能随机命中旧进程并继续得到 `WinError 10013`；已仅关闭确认属于本项目的旧进程，目前 8000 仅保留可出网后端，健康接口 HTTP 200。未修改前端缓存、数据库、Key 或远程部署。
+- 本地启动固化：`scripts/start-dev.ps1` 新增默认开启的 `NetworkEnabled` 参数；非管理员启动时，Django 后端通过 Windows UAC 请求高权限，前端仍普通启动，后端继承已有 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量。当前机器没有实际代理地址，因此本次固化采用高权限出站方式，不伪造或硬编码代理；PowerShell 语法、前端 5173、后端 8000 健康检查均通过。
+
+## 2026-09-08 当日部署验收归档与下次恢复点
+
+## 2026-09-09 文档一致性与待审核项复核
+
+- 已补充 `doc/PRD_V5.0.md` 第 12.3.9 节：第三方代理、自建境外 Gateway、境外直连和跨地域模型连接必须经过“草稿→待审核→审核通过→已验证→已启用”的独立审批生命周期；涉及生产数据、敏感数据、跨地域传输或高费用连接时触发 HITL/双人确认；连接状态、项目范围、数据去向、费用、密钥归属、有效期和审计要求已明确。
+- 已同步补充 `doc/AITS-LLM-代理兼容架构改进方案.md` 第 4.1.1 节；该方案仍是二期评审稿，尚未写入 `TASKS_V5.0.md`，未开始代码实现。
+- 本次新增 P0 产品补漏：PRD 第 21.5/21.6、技术架构第 22.4，以及任务 T147/T148。T147 负责管理员邀请/开通同事、平台角色、项目成员、项目角色、密码重置和审计闭环；T148 负责显式配置并展示唯一用户访问地址，避免把公网入口、后端端口、Docker、数据库、Redis 和 SSH 地址混淆。
+- 当前服务器用户入口以部署配置为准；本次已知外部入口为 `http://124.222.221.128:8090/`，其中 `8090` 是前端用户入口，后端 `8000`、数据库、Redis、Docker 内网地址和 SSH 地址都不应提供给普通同事。T148 完成后该入口不再依赖人工记忆，而由 `PUBLIC_APP_URL` 在管理员工作台展示和生成邀请链接。
+- 任务台账因新增 T147/T148 重新核算为 153 个唯一 `T` 任务 + 7 个唯一 `MR` 任务 = 160 个唯一任务标识，任务表 161 行；T116 仍是唯一历史重复行，不重复计数。
+- 用户最新实测状态：国内及其他可达供应商模型可以正常添加；当前未解决的是境外模型在该部署环境中无法完成目录/连接验证，不能据此判定模型配置功能整体不可用。此前模型发现 HTTP 500 的旧记录已由 2026-09-09 T146 修复记录覆盖，保留在历史时间线中，不作为当前状态。
+- 全量扫描 `doc/` 下 9 个 Markdown 文件后，确认存在以下未关闭事项：RAG 二阶段规划等待用户审核；T043-R、T047、T094、T095、T049、T043-L 等页面或真实视觉模型验收仍标记为待决策者验收；T107-T110 及 T025/T039 存在状态记录中的架构/依赖缺口；T145/T146 的旧部署未完成描述与 2026-09-09 的 T146 修复记录存在时间线冲突，需要后续统一状态口径。
+- 任务统计已按 `TASKS_V5.0.md` 实际任务表重新计算：151 个唯一 `T` 任务 + 7 个唯一 `MR` 任务 = 158 个唯一任务标识；任务表共 159 行，唯一重复为 T116 保留两行历史定义。阶段 9 实际包含 15 个任务，原记录写成 14 是漏计 T047-L。未删除任何任务或需求，已修正统计口径和阶段计数。
+- 已区分“需求中定义的待审核状态”和“开发台账中尚未完成的用户验收”：知识库审核流程 T026 已有实现和专项测试，不属于未处理的审核需求；本次新增的是 LLM 连接配置审批，不得用现有知识审核流程替代。
+- 当前不自动关闭上述事项、不修改历史完成记录、不把二期方案提前加入任务清单；下一步应由决策者确认二期方案和待验收项的处置顺序后，再逐项整改或归档。
+- 2026-09-09：按决策者确认开始处理 T147。新增账号动作令牌模型和迁移 `users.0002_accountactiontoken`，支持管理员邀请/重发/撤销激活链接、管理员生成一次性密码重置链接，以及公开激活和密码重置接口；用户管理工作台新增邀请同事、重发邀请、重置密码、撤销链接和安全复制入口，新增激活/重置页面。令牌只保存摘要，明文只在管理员本次响应中返回，不写日志；新账号默认停用且无密码，激活后才允许登录。
+- T147 同步补齐账号审计模型和迁移 `users.0003_accountauditevent`，记录邀请、重发、撤销、激活、生成重置链接、完成重置及平台权限变更；管理员工作台可查看最近审计事件，审计元数据过滤密码、令牌和其他敏感字段。
+- T147 第一轮专项测试 31/31、Django system check、迁移一致性检查通过；第二轮后端全量 327/327、迁移应用、前端生产构建通过；真实本地 HTTP 已验证管理员登录→邀请→一次性激活→新账号登录及对应审计记录闭环。决策者已完成页面验收，T147 标记为已完成；按明确指令，本轮及后续未收到“更新远程部署”前均不执行远程迁移、重建或容器更新。
+- 历史记录：当时下一任务为 T148“用户访问地址与部署入口展示”。T148 已按本地开发和验证范围完成，未更新远程部署；境外模型出网问题仍保持单独遗留项，不与本任务混做。当前工作转入 T150 Skill 业务页面闭环整改。
+- 2026-09-09：补修需求智能分析空项目入口 bug。无项目时“导入需求”按钮不再无解释地禁用，点击后跳转到“项目与智能体”页面，由用户显式创建项目；需求分析页不自动创建项目、不隐式选择项目。已有项目但角色无写权限时继续拒绝写操作并给出联系项目管理员提示。该修复仅涉及本地前端，生产构建通过；随后已完成 Skills 文件夹上传整改，详见下一条记录。
+- 2026-09-09：修复 Skills 第三方目录上传。Skills 安装工作台现在支持单个压缩包和浏览器文件夹选择（`webkitdirectory`）；文件夹必须包含 `SKILL.md`，浏览器提交相对路径和内容，后端执行重复路径、路径穿越、文件数（≤500）、总大小（≤50MB）和确定性 SHA-256 校验，不保存或执行第三方源码。原有 Manifest、权限声明、校验、审批、安装和回滚流程保持不变；远程部署仍按指令不更新。
+
+- 用户已在目标服务器部署的 V5 入口完成注册，账号标识为 `admin`；注册账号默认是 `viewer`，已通过服务器容器命令将其提升为平台管理员，并能进入“模型配置”页面。聊天中出现过服务器登录凭据和账号密码，后续必须更换，不得写入项目文件或日志。
+- 目标部署信息：服务器项目目录为 `/opt/aits-v5-release-20260908`，Compose 项目为 `aits_v5`；新验证前端容器为 `aits_v5_validation_frontend`，宿主机端口为 `8090`，后端容器为 `aits_v5-backend-1`。旧 `aits-*` 容器仍与 V5 并存，公网入口没有切换到旧系统。
+- 端口结论：云安全组截图显示全部 TCP 端口（含 22、80、8090）已放行；服务器 UFW 为 inactive；用户已能访问 `8090`。本开发环境仍无法直接 TCP 连接目标服务器，判断为当前开发环境自身的出站限制，不能据此认定目标服务器端口关闭。
+- 历史部署验收记录：模型配置页 DeepSeek“刷新模型目录”请求 `/api/configs/models/discover/` 曾连续返回 HTTP 500；同页公开目录 `/api/configs/models/catalog/` 返回 HTTP 200，认证、项目和路由矩阵接口均返回 HTTP 200。该问题已由后续 T146 修复记录覆盖，境外模型出网仍是独立环境遗留项。
+- 版本/部署判断：当前工作区 `HEAD` 与本地记录的 `origin/master` 都是 `0f9177f`，但 T146 连接安全与错误分层代码、测试和部署文件仍有未提交变更，不能假定 GitHub 已包含这些变更；当前环境通过 SSH 无法读取 GitHub 远端，也无法直接 SSH 目标服务器。截图中的 Compose 重建命令未显式加载 `.env.remote`，出现 `POSTGRES_* variable is not set` 警告并重建了 `aits_v5-db-1`；未执行删除卷操作，数据卷应仍保留，但必须用正确环境文件复核数据库健康状态。
+- 当日未完成且必须作为下次第一顺序的事项：等待当前 Compose 命令结束；在 `/opt/aits-v5-release-20260908` 使用 `--env-file .env.remote` 正确重建/检查 `db`、`backend`、`celery_worker` 和 `celery_beat`；确认数据库健康、Redis 连接和后端日志；确认容器内是否包含 `validate_outbound_endpoint`、`tcp_blocked`、`local_network_blocked` 等 T146 标记；再用服务器端无 Key 的 DeepSeek 网络预检（预期 401 也可证明出网）和一次明确授权的真实短调用定位 500。
+- 下次部署修复前禁止事项：不得执行 `docker compose down -v`、删除 `postgres_v5_data`/`redis_v5_data`、覆盖 `.env.remote`、在聊天中发送 API Key/密码，或在未确认镜像来源前盲目覆盖前端/后端容器。前端验证容器是独立容器，单纯 `git pull` 不会自动更新 8090 的静态构建产物；若确认镜像过旧，需要从已确认源码重建并重新创建该容器。
+- 历史任务边界：当时只完成部署连通性、管理员入口和问题归档，未提交/推送 Git；后续已按用户确认继续本地业务整改。当前以文档顶部的 T150 状态为准，远程部署仍未执行。
+
+## RAG 二阶段规划草案（待用户审核，2026-09-08）
+
+- 根据决策者要求，将 RAG 作为下一阶段独立规划，不直接进入代码实现。
+- 已更新 `doc/PRD_V5.0.md`：补充 RAG 二阶段的产品定位、用户场景、知识生命周期、PostgreSQL FTS 与 BM25 边界、固定向量维度、证据型回答、敏感数据外发、成本确认/限流/取消/回滚、错误交互和专项验收指标。
+- 已更新 `doc/TASKS_V5.0.md`：新增阶段24、T133-T144，按“契约与维度策略 → pgvector → Embedding/敏感检测/路由 → 索引成本与版本回滚 → LlamaIndex适配 → PostgreSQL FTS 混合检索 → 证据型回答 → API → 前端 → 评测验收”拆分；MR-05 的知识库模型接入转入该阶段。
+- 已更新 `doc/TECH_ARCH_V5.0.md`：补充 RAG 分层架构、固定维度和版本化向量存储、索引生命周期与原子回滚、Embedding 外发策略、PostgreSQL FTS 与可选 BM25 边界、证据型回答契约、LangGraph 接入、安全、评测和成本控制。
+- 规划判断：现有知识库解析、审核和基础检索可复用；当前 JSON 向量与离线 HashVectorizer 不满足生产 RAG，因此采用兼容迁移和双路径验证，不推倒重写。
+- 本次仅修改规划文档，未修改业务代码、数据库、依赖或环境变量；已完成文档一致性检查，未执行 RAG 实现测试，等待用户审核规划是否合格。
+
+## 模型供应商出网阻断审计（2026-09-08）
+
+- 用户反馈：模型配置页选择“所选模型实际调用”时，三个已配置模型均提示测试未通过，并出现 `WinError 10013`。
+- 已确认：前端 `5173`、后端 `8000` 和 `/api/health/` 均 HTTP 200；失败发生在后端向供应商发起外部请求的网络层。PowerShell 外网请求也失败，说明不是前端选择器或单个供应商协议导致。
+- 已确认：当前进程没有 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`，WinHTTP 为直连；运行环境存在 `codex_sandbox_offline_block_outbound` 出站阻断规则及回环阻断规则。
+- 处理结果：尝试增加仅限项目虚拟环境 `python.exe` 的 TCP 443 出站放行时，Windows 要求管理员权限，规则未修改；没有删除或停用整体安全策略，没有修改 Key、代码、数据库或依赖。
+- 架构判断：若生产服务器也没有供应商出网或代理，所有用户的连接测试、需求分析、用例生成、Embedding 和智能体模型调用都会失败；若只有当前受限开发环境阻断，生产服务器具备直连/代理能力则不构成同一故障。
+- 规划整改：在 `PRD_V5.0.md` 增加服务器端网络门禁、环境未就绪状态和目标地址安全校验，在 `TECH_ARCH_V5.0.md` 增加 Django/Celery 运行身份、直连/代理、DNS/TCP/TLS、SSRF 防护和分层错误要求，在 `TASKS_V5.0.md` 将工作拆为 T145 出网预检与 T146 连接诊断/安全校验闭环。
+- 当前阻断：需要管理员放行目标运行环境的最小供应商出站策略，或提供后端/Celery 可继承的受控代理；在此之前不能完成真实模型验收，也不应把 RAG 生产验收标记为通过。
+
+## 网络门禁规划合规复审整改（2026-09-08）
+
+- 已修正任务规则冲突：自动化测试默认使用 Mock；只有明确授权的连接测试和目标环境最终验收允许一次无业务数据短调用，禁止自动重试和无授权计费。
+- 已拆分职责：T145 只做服务器端出网、代理和运行身份预检；T146 负责后端 Service、REST 契约、前端反馈、错误分层和目标地址安全校验。
+- 已补充 SSRF 防护边界：供应商域名/端口白名单、解析 IP 校验、回环/私网/链路本地/云元数据地址拦截、DNS rebinding 防护和重定向绕过防护。
+- 已补充部署落地约束：Django、Celery Worker 和任务容器分别注入代理；明确代理认证、CA 证书和轮换，不假设项目 `.env` 会被所有启动脚本自动读取。
+- 已补充费用与健康检查约束：T145 网络预检不调用收费模型，禁止用定时收费调用作为健康检查；真实短调用只在目标环境最终验收时执行一次。
+- 复审结果：PRD、TASKS、TECH_ARCH 和 PROJECT_STATUS 的 T145/T146 引用、任务统计和依赖图已同步；本次仍未修改代码、数据库、依赖、环境变量或防火墙。
+
+## T146 连接测试安全校验与错误分层实现记录（2026-09-08）
+
+- 已完成后端请求前安全校验：内置供应商域名白名单、HTTPS/端口限制、解析 IP 校验、回环/私网/链路本地/云元数据地址拦截、禁止重定向绕过校验；`local` Provider 保留仅访问本机回环地址的明确例外。
+- 已完成错误分层：DNS、TCP/本机网络、TLS、代理、供应商 HTTP、鉴权、额度和目标不安全等错误转换为脱敏稳定码；历史 `local_network_blocked` 保持兼容。
+- 已完成 REST 与前端闭环：模型连接测试页面展示失败阶段和处理建议；异常信息不包含 Key、Authorization、代理凭据或完整敏感 URL。
+- 第一轮专项：T146 后端安全/错误/REST 测试 25/25，前端模型连接反馈测试 11/11。
+- 第二轮回归：后端全量 321/321；`manage.py check` 通过；`makemigrations --check --dry-run` 无变更；`pip check` 无依赖问题；前端全量 11/11；Vite 生产构建通过；前端、后端和健康接口均 HTTP 200。
+- 真实供应商调用：未在当前受限开发环境执行。当前机器仍因 WinError 10013 阻断外连，T145 的目标服务器/受控代理预检与一次明确授权的真实短调用仍是外部验收门禁，不能在本地把该项标记为通过。
+- 变更范围：修改 `backend/apps/configs/services.py`、`frontend/src/views/ModelConfigView.vue`；新增 T146 后端与前端测试及 `frontend/src/utils/modelConnection.js`；无新增依赖、环境变量或数据库迁移；未修改防火墙，未提交或推送 Git。
+- 下一步：由管理员为目标 Django/Celery 运行身份提供最小供应商出网或受控代理，执行 T145；通过后再按无业务数据、不自动重试、单次短调用规则完成目标环境真实验收。
+
+## T145 服务器隔离验证部署记录（2026-09-08）
+
+- 已连接目标服务器并确认 Ubuntu 24.04、Docker/Compose 可用；服务器对多个供应商完成无 Key 的网络预检，DeepSeek 返回 401、通义返回 404、智谱返回 200，证明服务器具备实际外网访问能力；OpenAI 端点仍需目标模型配置后单独验证。
+- 已在 `/opt/aits-v5-release-20260908` 建立隔离发布目录，上传当前源码和前端构建产物；保留原 `.env.remote`、数据库卷和 Redis 卷，未执行数据卷删除。
+- 已切换 `aits_v5` 的 backend、celery_worker、celery_beat 到当前验证镜像；数据库原有 43 项未应用迁移已完成应用，Django check、健康接口和 Worker Redis 连接通过。Compose 因依赖关系重新创建了 v5 db 容器，但持久化卷保持不变。
+- 已启动独立前端验证容器 `aits_v5_validation_frontend`，监听服务器 8090；服务器本机访问前端和 `/api/health/` 代理均 HTTP 200。公网 80 的旧 `aits` 系统未切换，若外部访问 8090 被云安全组拦截，需要放行 TCP 8090，或另行批准切换公网入口。
+- 当前为“模型连接验证镜像”：复用旧运行时基础层并补齐当前 Python 依赖，暂未重新下载 Tesseract 系统包；模型连接测试不依赖 Tesseract，最终生产镜像仍需使用稳定 Debian 镜像源补齐 OCR 系统依赖。
+- 用户验收前置：v5 数据库为初始化状态，尚无平台管理员和模型配置；用户需先在 `http://124.222.221.128:8090/` 注册账号并告知账号标识，再完成管理员授权和模型 Key 配置。禁止在聊天中发送模型 Key。
 
 ### TODAY ARCHIVE (2026-09-07)
 
@@ -99,8 +497,8 @@ Updated: 2026-09-07 19:05 (Asia/Shanghai)
 - 第一轮：文档加载及需求解析专项 11/11 通过。第二轮：后端全量 278/278、前端生产构建、Django check、migrate --check、pip check 通过。全量和构建证据分别保留在被忽略的 `.runtime/recovery-regression.log`、`.runtime/recovery-frontend-build.log`；PowerShell 将原生 stderr 包装为 NativeCommandError，Django 测试实际退出码为 0 且结果 OK。
 - 已归档结论：2026-09-06 最后归档明确 T047-L、T094、T095、T049、T131 完成代码、REST、前端入口、真实代理及重复操作验证；真实视觉模型语义验收仍待配置视觉模型，不能由 OCR 安全降级测试替代。
 - 已证实的前置遗漏：当前源码未找到 T107 AgentRuntimeAdapter、T108 LlamaIndex RAG 适配、T109 MCP 网关、T110 HITL/checkpoint 实现，对应 core/runtimes、core/rag、core/mcp、core/hitl 目录缺失，Git 提交标题亦未找到对应任务完成记录。T025/T033/T036/T039 已向后推进，存在任务依赖缺口。
-- 架构差异：T039 当前 apps/agents/graph.py 为自写顺序 AgentGraph，未使用 LangGraph StateGraph；T025 当前为 JSON 向量、离线 HashVectorizer 与余弦检索，未达到任务要求的 pgvector/BM25 混合检索。现有测试通过不能证明这些架构要求已交付。
-- 台账差异：任务表统计为 137 个唯一任务编号，T116 重复两行；TASKS 总数 136、旧状态总数 133 及阶段9数量未同步 T047-L。历史摘要中的待验收和旧下一任务需按最后归档统一，T094 表格依赖与依赖图仍有差异。
+- 架构差异：T039 当前 apps/agents/graph.py 为自写顺序 AgentGraph，未使用 LangGraph StateGraph；T025 当前为 JSON 向量、离线 HashVectorizer 与余弦检索，未达到任务要求的 pgvector + PostgreSQL FTS 混合检索。真正 BM25 不属于 RAG 二阶段 P0，需后续独立评估。现有测试通过不能证明这些架构要求已交付。
+- 历史台账差异记录：旧版本曾统计为 137 个唯一任务编号、TASKS 总数 136、旧状态总数 133，并漏计 T047-L；本次已按当前任务表重新核算并修正为 151 个唯一 T 任务、7 个唯一 MR 任务、158 个唯一任务标识，T116 重复行仅保留追溯，不重复计数。历史摘要中的待验收和旧下一任务仍需按用户验收结果逐项归档，不能删除历史记录代替状态修正。
 - Git：恢复前工作区干净，HEAD 为 512d382；已有 baseline/20260904-pre-batch 及多个附注检查点，最近创建的为 checkpoint/20260906-T131-ui-zh。本次未提交、打标签、推送或回滚；当前不是一次确认五项任务的批次。
 - 建议顺序：服务恢复（已完成）→统一台账并逐项补齐 T107、T108/T025、T109、T110/T039 的依赖与架构缺口→需要开放 API 的能力紧接前端真实联调和验收→重新审计后再恢复 T050。
 - 下一业务任务：暂缓 T050。建议首先确认 T107 统一智能体运行时边界，范围限输入/输出/事件/错误契约、默认单智能体路径和测试，不启用可选多智能体框架。其余补漏逐任务确认，不在本次审计中跨任务实现。
@@ -470,13 +868,15 @@ Updated: 2026-09-07 19:05 (Asia/Shanghai)
 
  - 2026-09-06：执行验收项1/2。通过真实 Chrome CDP 登录后访问 `/workspace/requirements`、`/workspace/case-generation`、`/workspace/skill-installations`、`/workspace/skill-audits` 和 `/workspace/skills`，页面入口、中文标题、加载/空数据状态和代理请求均通过，未发现英文旧标签或替换字符；切换到含记录项目后，评审与自动化筛选按钮在已完成状态均正确禁用，重复 REST 调用幂等返回200且约4ms。专项35/35、后端全量278/278、前端生产构建通过；DeepSeek连接测试200，但当前唯一激活配置为 `model_type=chat`，没有可执行视觉模型，因此截图语义模型真实验收待配置视觉模型后继续，当前保留确定性 OCR/人工确认降级。
 
- - 2026-09-06：本轮整改验收已归档。T047-L、T094、T095、T049、T131 的代码、REST、前端入口、真实代理联调和重复操作验证均完成；视觉模型语义结果因当前仅激活 chat 模型延期到用户配置视觉模型后单独验收，不影响已完成的安全降级链路和本轮归档。
+- 2026-09-06：本轮整改验收已归档。T047-L、T094、T095、T049、T131 的代码、REST、前端入口、真实代理联调和重复操作验证均完成；视觉模型语义结果因当前仅激活 chat 模型延期到用户配置视觉模型后单独验收，不影响已完成的安全降级链路和本轮归档。
+
+- 2026-09-09：T146 模型发现错误分层补漏完成。`ModelConfigViewSet` 保持 DRF 参数校验 400；新增模型凭据加密配置缺失/解密失败的明确 503 响应，覆盖模型发现和模型保存入口，未使用吞掉未知异常的 `except Exception`；新增缺失 Fernet 密钥回归测试。专项 22/22、后端全量 323/323、Django system check 通过；目标服务器发现原远程 AI 补丁造成 `views.py` 语法错误并导致 backend 退出，已用本地通过测试的代码恢复；目标部署补入持久化 `MODEL_CONFIG_FERNET_KEY`（原数据库无模型及加密凭据，先备份 `.env.remote`），backend/worker/beat 重建运行，健康接口 HTTP 200。经目标服务器 `:8090` 真实代理登录 HTTP 200；非法供应商发现返回 400；测试凭据的供应商发现返回脱敏 503 而非 500，响应不回显凭据。当前浏览器自动化表面不可用，页面级验收需用户在浏览器刷新后继续确认；未推送 Git。
 
 ## 关键约定
 
 - 每次新会话先运行根目录的 `start-dev.cmd`。
 - 每个任务完成后进行两轮测试并暂停，等待用户确认。
-- 所有外部调用在测试中使用 Mock，禁止产生真实计费。
+- 自动化测试中的外部调用使用 Mock，禁止无授权真实计费；模型连接测试和目标部署最终验收的单次真实短调用例外，须遵守 T145/T146 的明确授权、无业务数据和不自动重试规则。
 - 本文件是跨会话进度的唯一摘要入口；完成任务后必须同步更新。
 - 新会话必须按 `SESSION_START_AUDIT.md` 审计 TASKS、PRD、技术架构、测试证据和实际实现；报告无遗漏或遗漏项并取得用户确认后，方可继续编码。
 - 后端模型/服务可以按依赖逐项开发，但 REST API 完成后下一任务必须是对应前端页面、真实 API 联调和决策者验收；没有可操作的工作台入口，不得把业务模块标记为闭环完成或进入下一业务模块。

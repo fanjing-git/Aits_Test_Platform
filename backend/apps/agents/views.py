@@ -8,9 +8,12 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from apps.agents.models import Agent
-from apps.agents.permissions import AgentObjectPermission, can_edit_agents
-from apps.agents.serializers import AgentSerializer
+from apps.agents.execution import AgentExecutionError, AgentExecutionService
+from apps.agents.permissions import AgentExecutePermission, AgentObjectPermission, can_edit_agents
+from apps.agents.serializers import AgentExecutionRequestSerializer, AgentExecutionSerializer, AgentSerializer
 from apps.configs.models import ModelConfig, PromptConfig
+from apps.configs.models import ModelRoutingPolicy
+from apps.configs.routing import ModelRouteError, ModelRouteResolver, required_model_types
 from apps.projects.models import Project
 from apps.projects.permissions import is_platform_admin, project_role
 
@@ -20,16 +23,56 @@ class AgentViewSet(viewsets.ModelViewSet):
     permission_classes = (AgentObjectPermission,)
     queryset = Agent.objects.all()
 
+    def get_permissions(self):
+        """Use member-level authorization only for the execution action."""
+        if self.action == "execute":
+            return [AgentExecutePermission()]
+        return super().get_permissions()
+
+    @action(detail=True, methods=("post",))
+    def execute(self, request, pk=None):
+        """Start one controlled execution without exposing model credentials."""
+        agent = self.get_object()
+        serializer = AgentExecutionRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            execution = AgentExecutionService().start(
+                agent,
+                request.user,
+                serializer.validated_data["input_text"],
+                serializer.validated_data.get("interrupt_signal", ""),
+            )
+        except AgentExecutionError as exc:
+            raise ValidationError({"detail": str(exc), "code": exc.code}) from exc
+        return Response(AgentExecutionSerializer(execution).data, status=status.HTTP_201_CREATED)
+
     @action(detail=False, methods=("get",))
     def options(self, request):
         """Expose non-secret active configuration choices to the workspace UI."""
-        models = ModelConfig.objects.filter(is_active=True).values(
+        required = required_model_types(ModelRoutingPolicy.FeatureKey.AGENT_EXECUTION)
+        models = ModelConfig.objects.filter(
+            is_active=True,
+            model_type__in=required,
+        ).values(
             "id", "name", "provider", "model_name"
         )
         prompts = PromptConfig.objects.filter(is_active=True).values(
             "id", "name", "scope", "scene_type", "version"
         )
-        return Response({"models": list(models), "prompts": list(prompts)})
+        try:
+            route = ModelRouteResolver().resolve(ModelRoutingPolicy.FeatureKey.AGENT_EXECUTION)
+            route_data = route.as_dict()
+            route_error = route.failure_reason
+        except ModelRouteError as exc:
+            route_data = {"available": False, "failure_reason": str(exc)}
+            route_error = str(exc)
+        return Response({
+            "models": list(models),
+            "prompts": list(prompts),
+            "required_model_types": list(required),
+            "route": route_data,
+            "route_error": route_error,
+        })
 
     def create(self, request, *args, **kwargs):
         project_id = request.data.get("project_id")

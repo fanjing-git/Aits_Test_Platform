@@ -1,3 +1,7 @@
+param(
+    [bool]$NetworkEnabled = $true
+)
+
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -52,13 +56,21 @@ if (-not (Test-Path $pythonExe)) {
 
 if (-not (Test-Service "http://127.0.0.1:8000/")) {
     $backendLog = Join-Path $runtimeDir "backend.log"
+    $isAdministrator = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator
+    )
     $backendArgs = @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
         "-Command",
         "`$env:DJANGO_SETTINGS_MODULE='config.settings.dev'; `$env:DJANGO_SECRET_KEY='local-development-secret-key-at-least-32-bytes'; `$env:MODEL_CONFIG_FERNET_KEY='$modelConfigFernetKey'; Set-Location '$backendDir'; & '$pythonExe' manage.py runserver 127.0.0.1:8000 --insecure *>> '$backendLog'"
     )
-    $backendProcess = Start-Process powershell.exe -ArgumentList $backendArgs -WindowStyle Hidden -PassThru
+    if ($NetworkEnabled -and -not $isAdministrator) {
+        Write-Host "Backend requests elevated network access. Accept the Windows UAC prompt if shown."
+        $backendProcess = Start-Process powershell.exe -Verb RunAs -ArgumentList $backendArgs -WindowStyle Hidden -PassThru
+    } else {
+        $backendProcess = Start-Process powershell.exe -ArgumentList $backendArgs -WindowStyle Hidden -PassThru
+    }
     Set-Content -Path (Join-Path $runtimeDir "backend.pid") -Value $backendProcess.Id
     Write-Host "Backend starting (PID $($backendProcess.Id))..."
 } else {

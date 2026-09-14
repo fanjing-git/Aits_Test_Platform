@@ -7,12 +7,21 @@ import base64
 import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Protocol
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 from apps.configs.models import ModelConfig, ModelRoutingPolicy, PromptConfig
-from apps.configs.services import canonical_base
+from apps.configs.services import (
+    ProviderError,
+    parse_openai_json_response,
+    structured_chat,
+)
 from core.llm.manager import ModelFallbackExhausted, ModelManager, ModelNotFound
+from core.llm.structured_runtime import (
+    StructuredBatchError,
+    StructuredSegment,
+    execute_structured_segments,
+    merge_structured_payloads,
+    plan_structured_segments,
+)
 from core.prompts.manager import PromptManager
 
 
@@ -33,6 +42,19 @@ class StructuredRuntime(Protocol):
 
 class ModelAnalysisError(RuntimeError):
     """Raised when a model response cannot be safely accepted."""
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "model_error",
+        *,
+        structured_trace: Sequence[Mapping[str, Any]] = (),
+        partial_payload: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.structured_trace = tuple(dict(item) for item in structured_trace)
+        self.partial_payload = dict(partial_payload or {})
 
 
 def _validate_payload(payload: Mapping[str, Any], evidence_ids: set[str], evidence: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
@@ -64,6 +86,42 @@ def _validate_payload(payload: Mapping[str, Any], evidence_ids: set[str], eviden
     return result
 
 
+def _validate_visual_payload(
+    payload: Mapping[str, Any],
+    evidence_ids: set[str],
+    evidence: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Validate a vision response without treating visual inference as fact."""
+    required = ("elements", "text_blocks", "regions", "test_points")
+    if not all(isinstance(payload.get(key), list) for key in required):
+        raise ModelAnalysisError("视觉模型输出缺少结构化数组。", code="invalid_response")
+    result = {key: [dict(item) for item in payload[key] if isinstance(item, Mapping)] for key in required}
+    seen_ids: set[str] = set()
+    for collection in result.values():
+        for item in collection:
+            item_id = str(item.get("id", "")).strip()
+            if not item_id or item_id in seen_ids:
+                raise ModelAnalysisError("视觉模型输出包含缺失或重复标识。", code="invalid_response")
+            seen_ids.add(item_id)
+            cited = item.get("evidence_ids", [])
+            if cited and (not isinstance(cited, list) or not set(map(str, cited)).issubset(evidence_ids)):
+                raise ModelAnalysisError("视觉模型输出引用了不存在的证据。", code="invalid_response")
+    try:
+        confidence = max(0.0, min(1.0, float(payload.get("confidence", 0.0))))
+    except (TypeError, ValueError):
+        raise ModelAnalysisError("视觉模型输出的置信度无效。", code="invalid_response") from None
+    coverage = dict(payload.get("coverage_report") or {}) if isinstance(payload.get("coverage_report"), Mapping) else {}
+    warnings = payload.get("warnings", [])
+    if isinstance(warnings, list):
+        coverage["warnings"] = [str(item) for item in warnings if str(item).strip()]
+    coverage["confidence"] = round(confidence, 4)
+    coverage["needs_confirmation"] = bool(payload.get("needs_confirmation", confidence < 0.75 or bool(coverage.get("warnings"))))
+    result["confidence"] = round(confidence, 4)
+    result["needs_confirmation"] = coverage["needs_confirmation"]
+    result["coverage_report"] = coverage
+    return result
+
+
 class OpenAICompatibleRuntime:
     """Minimal OpenAI-compatible structured JSON runtime."""
 
@@ -80,16 +138,15 @@ class OpenAICompatibleRuntime:
         image_mime_type: str | None = None,
     ) -> Mapping[str, Any]:
         """Call a configured provider without logging credentials or source content."""
-        try:
-            base = canonical_base(self.config.provider, self.config.api_base_url)
-        except (KeyError, ValueError) as exc:
-            raise ModelAnalysisError("模型未配置有效 API 基础地址。") from exc
-        token = self.config.get_api_key() if self.config.api_key_encrypted else ""
         parameters = self.config.parameters if isinstance(self.config.parameters, dict) else {}
         try:
-            max_tokens = max(128, min(8192, int(parameters.get("max_tokens", 2048))))
+            configured_limit = parameters.get(
+                "structured_max_tokens",
+                parameters.get("max_tokens", 8192),
+            )
+            max_tokens = max(512, min(8192, int(configured_limit)))
         except (TypeError, ValueError):
-            max_tokens = 2048
+            max_tokens = 8192
         user_payload = json.dumps({"text": text, "evidence": list(evidence)}, ensure_ascii=False)
         user_content: str | list[dict[str, Any]] = user_payload
         if image_bytes:
@@ -99,57 +156,19 @@ class OpenAICompatibleRuntime:
                 {"type": "text", "text": user_payload},
                 {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}},
             ]
-        body = {
-            "model": self.config.model_name,
-            "temperature": parameters.get("structured_temperature", 0),
-            "max_tokens": max_tokens,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": user_content},
-            ],
-        }
-        # DeepSeek reasoning models can spend the entire output budget in
-        # ``reasoning_content`` and leave ``message.content`` empty.  Structured
-        # analysis requires the final JSON channel, so disable thinking by
-        # default while still allowing an explicit provider setting.
-        if self.config.provider.lower() == "deepseek":
-            thinking = parameters.get("thinking", {"type": "disabled"})
-            if isinstance(thinking, str):
-                thinking = {"type": thinking}
-            if isinstance(thinking, Mapping):
-                body["thinking"] = dict(thinking)
-        headers = {"Accept": "application/json", "Content-Type": "application/json"}
-        if token:
-            if self.config.provider == "anthropic":
-                headers.update({"x-api-key": token, "anthropic-version": "2023-06-01"})
-            elif self.config.provider == "google":
-                headers["x-goog-api-key"] = token
-            elif self.config.provider == "azure":
-                headers["api-key"] = token
-            else:
-                headers["Authorization"] = f"Bearer {token}"
-        request = Request(f"{base}/chat/completions", data=json.dumps(body, ensure_ascii=False).encode("utf-8"), headers=headers, method="POST")
         try:
-            with urlopen(request, timeout=30) as response:
-                raw = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
-            raise ModelAnalysisError("模型调用失败，已进入安全降级。") from exc
-        try:
-            content = raw["choices"][0]["message"].get("content")
-            if isinstance(content, str):
-                normalized = content.strip()
-                if normalized.startswith("```"):
-                    normalized = normalized.strip("`").removeprefix("json").strip()
-                return json.loads(normalized)
-            if isinstance(content, list):
-                text_parts = [item.get("text", "") for item in content if isinstance(item, Mapping)]
-                normalized = "".join(part for part in text_parts if isinstance(part, str)).strip()
-                if normalized:
-                    return json.loads(normalized)
-            return content
-        except (AttributeError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-            raise ModelAnalysisError("模型返回不是有效 JSON 结构。") from exc
+            response = structured_chat(
+                self.config,
+                messages=(
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": user_content},
+                ),
+                max_tokens=max_tokens,
+                temperature=float(parameters.get("structured_temperature", 0)),
+            )
+            return parse_openai_json_response(response)
+        except ProviderError as exc:
+            raise ModelAnalysisError(str(exc), code=exc.code) from exc
 
 
 class RequirementModelAdapter:
@@ -186,6 +205,43 @@ class RequirementModelAdapter:
             validator=lambda payload: _validate_payload(payload, evidence_ids, evidence),
         )
 
+    def analyze_visual(
+        self,
+        *,
+        text: str,
+        evidence: Sequence[Mapping[str, Any]],
+        image_bytes: bytes,
+        image_mime_type: str,
+        project_name: str | None = None,
+        preferred_model_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Run an evidence-grounded multimodal analysis through the shared runtime."""
+        evidence_ids = {str(item.get("id")) for item in evidence if item.get("id")}
+        instruction = (
+            "只输出 JSON；区分图像中直接可见的事实和需要人工确认的推断。"
+            "识别 elements、text_blocks、regions、test_points，并为可追溯内容填写 evidence_ids。"
+            "无法从图像确认的交互、业务含义或错误原因必须标记 needs_confirmation。"
+            "Output ONLY a JSON object with top-level keys elements, text_blocks, regions, test_points, confidence, warnings, needs_confirmation, coverage_report."
+        )
+        result = self.run(
+            text=text,
+            evidence=evidence,
+            project_name=project_name,
+            task_type="screenshot",
+            scene_type=PromptConfig.SceneType.SCREENSHOT_ANALYSIS,
+            instant_prompt=instruction,
+            image_bytes=image_bytes,
+            image_mime_type=image_mime_type,
+            preferred_model_name=preferred_model_name,
+            validator=lambda payload: _validate_visual_payload(payload, evidence_ids, evidence),
+        )
+        coverage = dict(result.get("coverage_report") or {})
+        result["warnings"] = list(coverage.get("warnings") or [])
+        result["confidence"] = float(coverage.get("confidence", result.get("confidence", 0.0)) or 0.0)
+        result["needs_confirmation"] = bool(coverage.get("needs_confirmation", True))
+        result["method"] = "model_verified_visual"
+        return result
+
     def run(
         self,
         *,
@@ -200,8 +256,9 @@ class RequirementModelAdapter:
         image_bytes: bytes | None = None,
         image_mime_type: str | None = None,
         preferred_model_name: str | None = None,
+        segment_builder: Callable[[str, Sequence[Mapping[str, Any]], int, int], Sequence[StructuredSegment]] | None = None,
     ) -> dict[str, Any]:
-        """Execute a structured runtime and apply a caller-provided validator."""
+        """Execute bounded structured segments and apply a caller validator."""
         evidence_ids = {str(item.get("id")) for item in evidence if item.get("id")}
         instruction = instant_prompt or (
             "只输出 JSON；每个功能和测试点必须引用可验证 evidence_ids；无法确认的内容放入 needs_confirmation。 "
@@ -215,28 +272,141 @@ class RequirementModelAdapter:
             instant_prompt=instruction,
         )
         prompt_content = prompt_override.strip() if isinstance(prompt_override, str) and prompt_override.strip() else resolved.content
-        def operation(runtime: StructuredRuntime, _config: ModelConfig) -> dict[str, Any]:
-            payload = runtime.generate_structured(
-                prompt=prompt_content,
-                text=text,
-                evidence=evidence,
-                image_bytes=image_bytes,
-                image_mime_type=image_mime_type,
+        feature_key = {
+            "screenshot": ModelRoutingPolicy.FeatureKey.SCREENSHOT_ANALYSIS,
+            "case_gen": ModelRoutingPolicy.FeatureKey.CASE_GENERATION,
+            "case_review": ModelRoutingPolicy.FeatureKey.CASE_REVIEW,
+        }.get(task_type, ModelRoutingPolicy.FeatureKey.REQUIREMENT_ANALYSIS)
+        resolved_route = None
+        selected_config = None
+        if isinstance(self.model_manager, ModelManager):
+            try:
+                resolved_route = self.model_manager.resolve_route(
+                    feature_key,
+                    task_type=task_type,
+                    preferred_name=preferred_model_name,
+                )
+            except Exception:
+                # The routed execution below remains the source of truth.  A
+                # diagnostic lookup must never hide its original error.
+                resolved_route = None
+
+        def route_metadata() -> dict[str, Any]:
+            """Return safe metadata for the configuration that actually ran."""
+            if not isinstance(self.model_manager, ModelManager):
+                return {}
+            config = selected_config or (resolved_route.primary.config if resolved_route and resolved_route.primary else None)
+            if config is None:
+                return resolved_route.as_dict() if resolved_route else {"available": False}
+            source = ""
+            if resolved_route:
+                candidate = next((item for item in resolved_route.candidates if item.config.pk == config.pk), None)
+                source = candidate.source if candidate else "operation"
+            return {
+                "feature_key": feature_key,
+                "available": True,
+                "effective_source": source,
+                "model": {
+                    "id": config.pk,
+                    "name": config.name,
+                    "provider": config.provider,
+                    "model_name": config.model_name,
+                    "model_type": config.model_type,
+                },
+                "candidates": [item.as_dict() for item in resolved_route.candidates] if resolved_route else [],
+            }
+
+        def operation(runtime: StructuredRuntime, config: ModelConfig) -> dict[str, Any]:
+            nonlocal selected_config
+            selected_config = config
+            raw_parameters = getattr(config, "parameters", {})
+            parameters = raw_parameters if isinstance(raw_parameters, dict) else {}
+            try:
+                max_input_chars = max(2000, min(100000, int(parameters.get("structured_input_chars", 24000))))
+                max_evidence_items = max(1, min(200, int(parameters.get("structured_segment_items", 32))))
+            except (TypeError, ValueError):
+                max_input_chars, max_evidence_items = 24000, 32
+            segments = tuple(
+                segment_builder(text, evidence, max_input_chars, max_evidence_items)
+                if segment_builder
+                else plan_structured_segments(
+                    text,
+                    evidence,
+                    max_input_chars=max_input_chars,
+                    max_evidence_items=max_evidence_items,
+                )
             )
-            return validator(payload) if validator else dict(payload)
+            if not segments:
+                raise ModelAnalysisError("结构化调用没有可执行的输入分段。", code="empty_segments")
+
+            def call_segment(segment: StructuredSegment) -> Mapping[str, Any]:
+                segment_prompt = prompt_content
+                if len(segments) > 1 or segment.depth:
+                    segment_prompt += (
+                        "\n当前是结构化分段生成。只处理本段提供的正文和证据，不要假设其他分段内容；"
+                        f"本段编号为 {segment.segment_id}，输出仍必须是符合 Schema 的 JSON 对象。"
+                    )
+                payload = runtime.generate_structured(
+                    prompt=segment_prompt,
+                    text=segment.text,
+                    evidence=segment.evidence,
+                    image_bytes=image_bytes,
+                    image_mime_type=image_mime_type,
+                )
+                return validator(payload) if validator else dict(payload)
+
+            try:
+                batch = execute_structured_segments(segments, call_segment)
+            except StructuredBatchError as exc:
+                error_code = next(
+                    (str(item.get("error_code")) for item in reversed(exc.trace) if item.get("error_code")),
+                    "structured_generation_error",
+                )
+                partial_payload = merge_structured_payloads(exc.partial_payloads)
+                partial_coverage = dict(partial_payload.get("coverage_report") or {})
+                partial_coverage["structured_generation"] = {
+                    "status": "partial",
+                    "segment_count": len(segments),
+                    "completed_segments": len(exc.partial_payloads),
+                    "segments": [dict(item) for item in exc.trace],
+                }
+                partial_coverage["prompt_provenance"] = {
+                    "scene_type": scene_type,
+                    "layers": list(getattr(resolved, "layers", ())),
+                    "config_ids": list(getattr(resolved, "config_ids", ())),
+                    "instant_instruction": bool(instant_prompt),
+                }
+                partial_coverage["model_route"] = route_metadata()
+                partial_payload["coverage_report"] = partial_coverage
+                raise ModelAnalysisError(
+                    f"{exc} 已完成 {len(exc.partial_payloads)} 个分段，失败段可按轨迹恢复。",
+                    code=error_code,
+                    structured_trace=exc.trace,
+                    partial_payload=partial_payload,
+                ) from exc
+            result = batch.payload
+            if validator:
+                result = validator(result)
+            coverage = dict(result.get("coverage_report") or {})
+            coverage["structured_generation"] = {
+                "status": "completed",
+                "segment_count": len(batch.trace),
+                "completed_segments": sum(item.get("status") == "completed" for item in batch.trace),
+                "segments": [dict(item) for item in batch.trace],
+            }
+            coverage["prompt_provenance"] = {
+                "scene_type": scene_type,
+                "layers": list(getattr(resolved, "layers", ())),
+                "config_ids": list(getattr(resolved, "config_ids", ())),
+                "instant_instruction": bool(instant_prompt),
+            }
+            coverage["model_route"] = route_metadata()
+            result["coverage_report"] = coverage
+            return result
         try:
-            feature_key = {
-                "screenshot": ModelRoutingPolicy.FeatureKey.SCREENSHOT_ANALYSIS,
-                "case_gen": ModelRoutingPolicy.FeatureKey.CASE_GENERATION,
-                "case_review": ModelRoutingPolicy.FeatureKey.CASE_REVIEW,
-            }.get(task_type, ModelRoutingPolicy.FeatureKey.REQUIREMENT_ANALYSIS)
-            use_routed_policy = bool(preferred_model_name)
+            # Production managers always use the explicit route resolver. The
+            # legacy branch is retained only for small injected test doubles.
             if self.model_manager.__class__.__module__ == "core.llm.manager":
-                use_routed_policy = use_routed_policy or ModelRoutingPolicy.objects.filter(
-                    feature_key__in=(ModelRoutingPolicy.FeatureKey.GLOBAL, feature_key),
-                    is_active=True,
-                ).exists()
-            if use_routed_policy:
                 return self.model_manager.execute_routed(
                     feature_key,
                     operation,
@@ -244,8 +414,24 @@ class RequirementModelAdapter:
                     preferred_name=preferred_model_name,
                 )
             return self.model_manager.execute_with_fallback(task_type, operation, retry_on=(Exception,))
-        except (ModelNotFound, ModelFallbackExhausted) as exc:
-            raise ModelAnalysisError("没有可用的需求分析模型，已使用确定性基线。") from exc
+        except ModelNotFound as exc:
+            raise ModelAnalysisError(
+                "没有可用的需求分析模型，请先配置并启用兼容文本分析的模型。"
+            ) from exc
+        except ModelFallbackExhausted as exc:
+            attempted = "、".join(exc.attempted_models) or "未记录"
+            cause = exc.last_error or exc.__cause__
+            if isinstance(cause, ModelAnalysisError):
+                cause.args = (f"{cause} \u5df2\u5c1d\u8bd5\u6a21\u578b\uff1a{attempted}",)
+                raise cause from exc
+            error_code = cause.code if isinstance(cause, ModelAnalysisError) else "model_error"
+            structured_trace = cause.structured_trace if isinstance(cause, ModelAnalysisError) else ()
+            partial_payload = cause.partial_payload if isinstance(cause, ModelAnalysisError) else {}
+            detail = f" {cause}" if isinstance(cause, ModelAnalysisError) and str(cause) else ""
+            raise ModelAnalysisError(
+                f"需求分析模型调用失败，已尝试模型：{attempted}。{detail}"
+                "请检查 API 地址、模型名称、Key、网络和模型路由。"
+            ) from exc
 
 
 __all__ = ["ModelAnalysisError", "OpenAICompatibleRuntime", "RequirementModelAdapter", "StructuredRuntime"]

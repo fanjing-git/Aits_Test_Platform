@@ -14,7 +14,7 @@ export async function loadAllModelPages(fetchPage, payload, onPage, isCurrent = 
     cursor = page.next_cursor || ''
     if (cursor && seen.has(cursor)) throw new Error('供应商分页重复，目录未完整加载。')
     seen.add(cursor)
-    onPage([...found.values()], Boolean(cursor))
+    onPage([...found.values()], Boolean(cursor), page)
   } while (cursor && isCurrent())
 }
 

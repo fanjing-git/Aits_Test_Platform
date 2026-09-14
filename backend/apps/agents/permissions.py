@@ -26,3 +26,39 @@ class AgentObjectPermission(BasePermission):
         if request.method == "DELETE":
             return role == ProjectMember.Role.OWNER
         return role in {ProjectMember.Role.OWNER, ProjectMember.Role.MANAGER}
+
+
+class AgentExecutePermission(BasePermission):
+    """Allow project members to run an active agent, with no config mutation."""
+
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated)
+
+    def has_object_permission(self, request, view, obj):
+        if is_platform_admin(request.user):
+            return True
+        return project_role(request.user, obj.project) in {
+            ProjectMember.Role.OWNER,
+            ProjectMember.Role.MANAGER,
+            ProjectMember.Role.MEMBER,
+        }
+
+
+class AgentExecutionObjectPermission(BasePermission):
+    """Keep execution history project-scoped and controls owner/manager-scoped."""
+
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated)
+
+    def has_object_permission(self, request, view, obj):
+        if is_platform_admin(request.user):
+            return True
+        if obj.project_id is None:
+            return obj.requested_by_id == request.user.pk
+        role = project_role(request.user, obj.project)
+        if request.method in SAFE_METHODS:
+            return role is not None
+        return obj.requested_by_id == request.user.pk or role in {
+            ProjectMember.Role.OWNER,
+            ProjectMember.Role.MANAGER,
+        }

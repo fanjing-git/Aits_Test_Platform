@@ -6,9 +6,12 @@ does not perform HTTP requests, import package code, or invoke entrypoints.
 from __future__ import annotations
 
 import hashlib
+import base64
+import binascii
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
+from pathlib import PurePosixPath
 
 from django.db import transaction
 from django.utils import timezone
@@ -19,6 +22,7 @@ from apps.skills.sources import SkillManifest, SkillSourceError
 
 
 MAX_ARTIFACT_BYTES = 50 * 1024 * 1024
+MAX_ARTIFACT_FILES = 500
 
 
 class SkillInstallationError(ValueError):
@@ -59,6 +63,55 @@ def _artifact_bytes(artifact: bytes | bytearray | str | Path) -> bytes:
     return content
 
 
+def _directory_artifact_bytes(artifact_files: Sequence[Mapping[str, Any]]) -> bytes:
+    """Normalize a selected Skill folder into deterministic verification bytes."""
+    if not isinstance(artifact_files, (list, tuple)) or not artifact_files:
+        raise SkillInstallationError("artifact_files must contain at least one file")
+    if len(artifact_files) > MAX_ARTIFACT_FILES:
+        raise SkillInstallationError("Skill folder contains too many files")
+    entries: list[tuple[str, bytes]] = []
+    seen: set[str] = set()
+    total_size = 0
+    for item in artifact_files:
+        if not isinstance(item, Mapping):
+            raise SkillInstallationError("Skill folder entries must be objects")
+        raw_path = item.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise SkillInstallationError("Skill folder entry path is invalid")
+        normalized_path = raw_path.replace("\\", "/").strip()
+        if normalized_path.startswith("/") or normalized_path.startswith("./") or "\x00" in normalized_path:
+            raise SkillInstallationError("Skill folder contains an unsafe path")
+        path = PurePosixPath(normalized_path)
+        if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts) or ":" in path.parts[0]:
+            raise SkillInstallationError("Skill folder contains an unsafe path")
+        safe_path = str(path)
+        if safe_path.casefold() in seen:
+            raise SkillInstallationError("Skill folder contains duplicate paths")
+        encoded = item.get("content_base64")
+        if not isinstance(encoded, str) or not encoded:
+            raise SkillInstallationError("Skill folder entry content is invalid")
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise SkillInstallationError("Skill folder entry content is invalid") from exc
+        total_size += len(content)
+        if total_size > MAX_ARTIFACT_BYTES:
+            raise SkillInstallationError("Skill folder exceeds the 50 MB limit")
+        seen.add(safe_path.casefold())
+        entries.append((safe_path, content))
+    if not any(PurePosixPath(path).name.casefold() == "skill.md" for path, _ in entries):
+        raise SkillInstallationError("Skill folder must contain SKILL.md")
+    canonical = bytearray()
+    for path, content in sorted(entries):
+        path_bytes = path.encode("utf-8")
+        canonical.extend(path_bytes)
+        canonical.extend(b"\0")
+        canonical.extend(str(len(content)).encode("ascii"))
+        canonical.extend(b"\0")
+        canonical.extend(content)
+    return bytes(canonical)
+
+
 def verify_artifact(
     manifest: SkillManifest,
     artifact: bytes | bytearray | str | Path,
@@ -84,6 +137,22 @@ def verify_artifact(
         return ArtifactVerification(content_hash, commit_hash, artifact_version or manifest.version)
     except SkillSourceError as exc:
         raise SkillInstallationError(str(exc)) from exc
+
+
+def verify_directory_artifact(
+    manifest: SkillManifest,
+    artifact_files: Sequence[Mapping[str, Any]],
+    *,
+    artifact_version: str | None = None,
+    observed_commit_hash: str | None = None,
+) -> ArtifactVerification:
+    """Verify a Skills folder using a deterministic, path-safe content digest."""
+    return verify_artifact(
+        manifest,
+        _directory_artifact_bytes(artifact_files),
+        artifact_version=artifact_version,
+        observed_commit_hash=observed_commit_hash,
+    )
 
 
 def _require_admin(user: Any) -> None:
@@ -119,6 +188,35 @@ def verify_installation(
         evidence = verify_artifact(
             manifest,
             artifact,
+            artifact_version=artifact_version,
+            observed_commit_hash=observed_commit_hash,
+        )
+    except SkillInstallationError as exc:
+        installation.status = SkillInstallation.Status.FAILED
+        installation.error_message = str(exc)
+        installation.save(update_fields=("status", "error_message", "updated_at"))
+        raise
+    installation.file_hash = evidence.file_hash
+    installation.commit_hash = evidence.commit_hash or installation.commit_hash
+    installation.status = SkillInstallation.Status.VERIFIED
+    installation.error_message = ""
+    installation.save(update_fields=("file_hash", "commit_hash", "status", "error_message", "updated_at"))
+    return installation
+
+
+def verify_directory_installation(
+    installation: SkillInstallation,
+    artifact_files: Sequence[Mapping[str, Any]],
+    *,
+    artifact_version: str | None = None,
+    observed_commit_hash: str | None = None,
+) -> SkillInstallation:
+    """Verify and record a selected Skills folder without persisting its code."""
+    manifest = SkillManifest.from_dict(installation.manifest)
+    try:
+        evidence = verify_directory_artifact(
+            manifest,
+            artifact_files,
             artifact_version=artifact_version,
             observed_commit_hash=observed_commit_hash,
         )
@@ -205,6 +303,7 @@ def uninstall_installation(installation: SkillInstallation, actor: Any) -> Skill
 __all__ = [
     "ArtifactVerification",
     "MAX_ARTIFACT_BYTES",
+    "MAX_ARTIFACT_FILES",
     "SkillInstallationError",
     "approve_installation",
     "install_verified",
@@ -213,5 +312,7 @@ __all__ = [
     "sha256_bytes",
     "uninstall_installation",
     "verify_artifact",
+    "verify_directory_artifact",
+    "verify_directory_installation",
     "verify_installation",
 ]

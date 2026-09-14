@@ -9,6 +9,65 @@ from typing import Any
 from apps.configs.models import ModelConfig, PromptConfig
 from apps.case_generation.models import CaseGenerationRecord
 from apps.requirement_analysis.llm_adapter import ModelAnalysisError, RequirementModelAdapter
+from core.llm.structured_runtime import StructuredSegment, plan_structured_segments
+
+
+def _json_scope_segments(
+    text: str,
+    evidence: Sequence[Mapping[str, Any]],
+    max_input_chars: int,
+    max_items: int,
+    *,
+    collection_key: str,
+) -> tuple[StructuredSegment, ...]:
+    """Split a generation/review JSON scope by stable business items."""
+    try:
+        scope = json.loads(text)
+    except (TypeError, ValueError):
+        return plan_structured_segments(text, evidence, max_input_chars=max_input_chars, max_evidence_items=max_items)
+    if not isinstance(scope, dict) or not isinstance(scope.get(collection_key), list):
+        return plan_structured_segments(text, evidence, max_input_chars=max_input_chars, max_evidence_items=max_items)
+    items = [item for item in scope[collection_key] if isinstance(item, Mapping)]
+    if not items:
+        return (StructuredSegment("segment-0001", text, tuple(evidence)),)
+    chunks: list[list[Mapping[str, Any]]] = []
+    chunk_size = max(1, min(max_items, len(items)))
+    while True:
+        chunks = [items[start : start + chunk_size] for start in range(0, len(items), chunk_size)]
+        if all(len(json.dumps({**scope, collection_key: chunk}, ensure_ascii=False, default=str)) <= max_input_chars for chunk in chunks):
+            break
+        if chunk_size == 1:
+            break
+        chunk_size = max(1, chunk_size // 2)
+    result: list[StructuredSegment] = []
+    for index, chunk in enumerate(chunks, start=1):
+        chunk_ids = {str(item.get("id")) for item in chunk if item.get("id")}
+        bounded = dict(scope)
+        bounded[collection_key] = chunk
+        for key in ("modules", "functions", "test_points", "linkages"):
+            if isinstance(bounded.get(key), list) and key != collection_key:
+                if key == "modules":
+                    module_ids = {str(item.get("module_id")) for item in chunk if item.get("module_id")}
+                    bounded[key] = [item for item in bounded[key] if str(item.get("id")) in module_ids] or bounded[key]
+                elif key in {"test_points", "linkages"}:
+                    bounded[key] = [
+                        item for item in bounded[key]
+                        if not chunk_ids or any(str(item.get(field)) in chunk_ids for field in ("function_id", "from", "to", "source_function_id", "target_function_id"))
+                    ]
+                elif key == "existing_cases":
+                    bounded[key] = [item for item in bounded[key] if not chunk_ids or str(item.get("source_function_id")) in chunk_ids]
+        for key in ("existing_issues", "existing_corrections"):
+            if isinstance(bounded.get(key), list) and collection_key == "cases":
+                bounded[key] = [item for item in bounded[key] if not chunk_ids or str(item.get("case_id")) in chunk_ids]
+        for key in ("document", "requirement"):
+            if isinstance(bounded.get(key), str) and len(bounded[key]) > max_input_chars // 2:
+                bounded[key] = bounded[key][: max_input_chars // 2] + "\n[本段正文已按预算截取，其他内容由其他分段处理]"
+        references = set()
+        for item in chunk:
+            references.update(str(value) for value in item.get("evidence_ids", []) if value)
+        bounded_evidence = tuple(item for item in evidence if not references or str(item.get("id")) in references)
+        result.append(StructuredSegment(f"segment-{index:04d}", json.dumps(bounded, ensure_ascii=False), bounded_evidence))
+    return tuple(result)
 
 
 class CaseGenerationModelAdapter:
@@ -107,6 +166,13 @@ class CaseGenerationModelAdapter:
             prompt_override=instruction,
             validator=lambda payload: self._validate_cases(payload, function_ids, linkage_ids),
             preferred_model_name=preferred_model_name,
+            segment_builder=lambda raw_text, raw_evidence, max_chars, max_items: _json_scope_segments(
+                raw_text,
+                raw_evidence,
+                max_chars,
+                max_items,
+                collection_key="functions",
+            ),
         )
 
     def generate(self, *, functions: Sequence[Mapping[str, Any]], linkages: Sequence[Mapping[str, Any]], evidence: Sequence[Mapping[str, Any]], project_name: str | None = None) -> dict[str, Any]:
@@ -172,6 +238,8 @@ def _validate_review_payload(payload: Mapping[str, Any], case_ids: set[str], evi
             raise ModelAnalysisError("模型评审引用了不存在的证据。")
         localized_description = _localize_review_text(description)
         localized_suggestion = _localize_review_text(suggestion, suggestion=True)
+        model_description = str(raw.get("model_description") or description)
+        model_suggestion = str(raw.get("model_suggestion") or suggestion)
         normalized_issues.append({
             "id": str(raw.get("id") or f"model-issue-{index}"),
             "code": str(raw.get("code") or "model_review_issue"),
@@ -181,8 +249,8 @@ def _validate_review_payload(payload: Mapping[str, Any], case_ids: set[str], evi
             "dimension": str(raw.get("dimension") or "model_review"),
             "description": localized_description,
             "suggestion": localized_suggestion,
-            "model_description": description,
-            "model_suggestion": suggestion,
+            "model_description": model_description,
+            "model_suggestion": model_suggestion,
             "evidence_ids": [str(item) for item in cited],
             "source": "model",
         })
@@ -194,12 +262,16 @@ def _validate_review_payload(payload: Mapping[str, Any], case_ids: set[str], evi
         if field not in {"title", "steps", "expected_result", "priority", "type"}:
             raise ModelAnalysisError("模型修正字段不在允许范围内。")
         normalized_corrections.append({"case_id": str(raw["case_id"]), "field": field, "value": raw.get("value")})
-    return {
+    result = {
         "issues": normalized_issues,
         "corrections": normalized_corrections,
         "approved": payload["approved"],
         "summary": str(payload.get("summary") or "").strip(),
     }
+    coverage = payload.get("coverage_report")
+    if isinstance(coverage, Mapping) and isinstance(coverage.get("structured_generation"), Mapping):
+        result["coverage_report"] = {"structured_generation": dict(coverage["structured_generation"])}
+    return result
 
 
 class CaseReviewModelAdapter:
@@ -250,6 +322,13 @@ class CaseReviewModelAdapter:
             prompt_override=instruction,
             validator=lambda payload: _validate_review_payload(payload, case_ids, evidence_ids),
             preferred_model_name=preferred_model_name,
+            segment_builder=lambda raw_text, raw_evidence, max_chars, max_items: _json_scope_segments(
+                raw_text,
+                raw_evidence,
+                max_chars,
+                max_items,
+                collection_key="cases",
+            ),
         )
 
 

@@ -32,8 +32,10 @@ class CaseGenerationApiTests(TestCase):
         self.assertEqual(created.status_code, status.HTTP_201_CREATED)
         record_id = created.data["id"]
         self.assertGreater(created.data["total_cases"], 0)
+        self.assertEqual(created.data["skill_execution"]["status"], "completed")
         reviewed = self.client.post(f"{self.url}{record_id}/review/")
         self.assertEqual(reviewed.status_code, status.HTTP_200_OK)
+        self.assertEqual(reviewed.data["skill_execution"]["status"], "completed")
         selected = self.client.post(f"{self.url}{record_id}/select/")
         self.assertEqual(selected.status_code, status.HTTP_200_OK)
         self.assertIn("automation_selection", selected.data["coverage_report"])

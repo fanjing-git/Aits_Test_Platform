@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from unittest.mock import Mock, patch
 
-from apps.configs.models import ModelConfig
+from apps.configs.models import ModelConfig, ModelRoutingPolicy
 from apps.case_generation.generator import CaseGenerationError, generate_cases, generate_document_cases
 from apps.case_generation.llm_adapter import CaseGenerationModelAdapter
 from apps.case_generation.models import CaseGenerationRecord
@@ -64,7 +64,11 @@ class CaseGenerationTests(TestCase):
         project = Project.objects.create(name="Case model project", created_by=user)
         document = RequirementDocument.objects.create(project=project, title="Order", content_text="用户登录。", created_by=user)
         analysis = analyze_requirement_document(document)
-        ModelConfig.objects.create(name="case-fake-chat", provider=ModelConfig.Provider.CUSTOM, model_name="fake", model_type=ModelConfig.ModelType.CHAT)
+        model = ModelConfig.objects.create(name="case-fake-chat", provider=ModelConfig.Provider.CUSTOM, model_name="fake", model_type=ModelConfig.ModelType.CHAT)
+        ModelRoutingPolicy.objects.create(
+            feature_key=ModelRoutingPolicy.FeatureKey.CASE_GENERATION,
+            primary_model=model,
+        )
         fake = Mock()
         fake.generate.return_value = {"cases": [{"id": "draft-1", "title": "用户登录 - 正常流程", "type": "positive", "source_function_id": analysis.functions[0]["id"], "steps": ["执行登录"], "expected_result": "登录成功"}], "coverage_report": {}, "round_trace": []}
         with patch("apps.case_generation.generator.CaseGenerationModelAdapter", return_value=fake):
@@ -77,7 +81,11 @@ class CaseGenerationTests(TestCase):
         project = Project.objects.create(name="Case model failure project", created_by=user)
         document = RequirementDocument.objects.create(project=project, title="Order", content_text="登录", created_by=user)
         analysis = analyze_requirement_document(document)
-        ModelConfig.objects.create(name="case-failing-chat", provider=ModelConfig.Provider.CUSTOM, model_name="fake", model_type=ModelConfig.ModelType.CHAT)
+        model = ModelConfig.objects.create(name="case-failing-chat", provider=ModelConfig.Provider.CUSTOM, model_name="fake", model_type=ModelConfig.ModelType.CHAT)
+        ModelRoutingPolicy.objects.create(
+            feature_key=ModelRoutingPolicy.FeatureKey.CASE_GENERATION,
+            primary_model=model,
+        )
         failing = Mock()
         failing.generate.side_effect = ModelAnalysisError("provider unavailable")
         with patch("apps.case_generation.generator.CaseGenerationModelAdapter", return_value=failing):

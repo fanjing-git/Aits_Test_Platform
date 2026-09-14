@@ -6,6 +6,7 @@ from apps.agents.planning import plan_node, retrieve_node
 from apps.agents.reporting import learn_node, reflect_node, report_node
 from apps.agents.requirement import case_generation_node, case_review_node, requirement_analysis_node
 from apps.agents.state import AgentState
+from apps.skills.orchestration import SkillExecutionService
 
 
 class AgentGraph:
@@ -13,14 +14,22 @@ class AgentGraph:
     def __init__(self) -> None:
         self.nodes: tuple[Callable[[AgentState], AgentState], ...] = (perceive_node, understand_node, retrieve_node, plan_node, decide_node)
 
-    def invoke(self, state: AgentState) -> AgentState:
+    def invoke(
+        self,
+        state: AgentState,
+        model_executor: Callable[[AgentState], AgentState] | None = None,
+    ) -> AgentState:
         """Run perception through reporting, honoring pause/cancel routes."""
         current = state
         for node in self.nodes:
             current = node(current)
-        if current.get("route") == "requirement_analysis":
+        if current.get("route") not in {"wait_for_input", "cancelled"} and not current.get("agent_execution"):
+            current = SkillExecutionService().execute_state(current)
+        if current.get("agent_execution") and model_executor and current.get("execution_status") not in {"paused", "cancelled", "failed"}:
+            current = model_executor(current)
+        elif current.get("route") == "requirement_analysis" and current.get("execution_status") not in {"paused", "cancelled", "failed"}:
             current = requirement_analysis_node(current); current = case_generation_node(current); current = case_review_node(current)
-        if current.get("route") not in {"wait_for_input", "cancelled"}:
+        if current.get("route") not in {"wait_for_input", "cancelled"} and current.get("execution_status") not in {"paused", "cancelled", "failed"}:
             current = reflect_node(current); current = learn_node(current); current = report_node(current)
         return current
 

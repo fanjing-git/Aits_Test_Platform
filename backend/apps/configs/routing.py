@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
-
+from apps.configs.contracts import (
+    ModelCallContract,
+    ModelCapabilityError,
+    model_call_contract,
+    validate_model_capability,
+)
 from apps.configs.models import ModelConfig, ModelRoutingPolicy
 
 
@@ -29,6 +33,20 @@ class ModelRouteCandidate:
     source: str
     is_fallback: bool = False
 
+    def as_dict(self) -> dict[str, object]:
+        """Return safe route metadata without exposing credentials."""
+        provider = getattr(self.config.provider, "value", self.config.provider)
+        model_type = getattr(self.config.model_type, "value", self.config.model_type)
+        return {
+            "id": self.config.pk,
+            "name": self.config.name,
+            "provider": str(provider),
+            "model_name": self.config.model_name,
+            "model_type": str(model_type),
+            "source": self.source,
+            "is_fallback": self.is_fallback,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class ResolvedModelRoute:
@@ -36,6 +54,7 @@ class ResolvedModelRoute:
 
     feature_key: str
     required_types: tuple[str, ...]
+    contract: ModelCallContract
     candidates: tuple[ModelRouteCandidate, ...]
     allow_fallback: bool = False
     allow_deterministic_baseline: bool = False
@@ -44,6 +63,33 @@ class ResolvedModelRoute:
     def primary(self) -> ModelRouteCandidate | None:
         """Return the first candidate, if a model is available."""
         return self.candidates[0] if self.candidates else None
+
+    @property
+    def available(self) -> bool:
+        """Whether the route contains a model that can execute the contract."""
+        return bool(self.primary)
+
+    @property
+    def failure_reason(self) -> str:
+        """Return a stable diagnostic when no model route is available."""
+        if self.available:
+            return ""
+        return f"未配置支持{self.contract.label}的有效模型，请先配置功能路由或平台全局路由。"
+
+    def as_dict(self) -> dict[str, object]:
+        """Return JSON-safe route diagnostics for REST callers."""
+        required_types = [getattr(item, "value", item) for item in self.required_types]
+        return {
+            "feature_key": self.feature_key,
+            "required_model_types": [str(item) for item in required_types],
+            "capability_contract": self.contract.as_dict(),
+            "candidates": [candidate.as_dict() for candidate in self.candidates],
+            "effective_source": self.primary.source if self.primary else "",
+            "available": self.available,
+            "allow_fallback": self.allow_fallback,
+            "allow_deterministic_baseline": self.allow_deterministic_baseline,
+            "failure_reason": self.failure_reason,
+        }
 
 
 FEATURE_ALIASES = {
@@ -80,36 +126,15 @@ def required_model_types(
     task_type: str | None = None,
 ) -> tuple[str, ...]:
     """Return the model capabilities a feature is allowed to use."""
-    task = (task_type or "").strip().lower().replace("-", "_")
-    if task in {ModelConfig.ModelType.EMBEDDING, "embedding", "vectorization", "indexing", "retrieval"}:
-        return (ModelConfig.ModelType.EMBEDDING,)
-    if task in {"vision", "screenshot", "image_analysis"}:
-        return (ModelConfig.ModelType.VISION, ModelConfig.ModelType.MULTIMODAL)
-    if task in {"audio", "tts", "asr", "realtime", "rerank"}:
-        return (task,)
-    feature = normalize_feature_key(feature_key)
-    if feature == ModelRoutingPolicy.FeatureKey.SCREENSHOT_ANALYSIS:
-        return (ModelConfig.ModelType.VISION, ModelConfig.ModelType.MULTIMODAL)
-    if feature == ModelRoutingPolicy.FeatureKey.GLOBAL and not task:
-        return tuple(choice.value for choice in ModelConfig.ModelType)
-    if feature == ModelRoutingPolicy.FeatureKey.KNOWLEDGE_MODEL:
-        return (ModelConfig.ModelType.EMBEDDING, ModelConfig.ModelType.RERANK)
-    if feature in {
-        ModelRoutingPolicy.FeatureKey.REQUIREMENT_ANALYSIS,
-        ModelRoutingPolicy.FeatureKey.CASE_GENERATION,
-        ModelRoutingPolicy.FeatureKey.CASE_REVIEW,
-        ModelRoutingPolicy.FeatureKey.AGENT_EXECUTION,
-        ModelRoutingPolicy.FeatureKey.REPORT_GENERATION,
-    }:
-        return TEXT_TYPES
-    if task in {choice.value for choice in ModelConfig.ModelType}:
-        return (task,)
-    return (ModelConfig.ModelType.CHAT,)
+    return model_call_contract(feature_key, task_type).accepted_model_types
 
 
-def _compatible(config: ModelConfig | None, required: Iterable[str]) -> bool:
-    """Check active status and capability compatibility without touching secrets."""
-    return bool(config and config.is_active and config.model_type in set(required))
+def _require_compatible(config: ModelConfig, contract: ModelCallContract) -> None:
+    """Validate a configured route against the complete call contract."""
+    try:
+        validate_model_capability(config, contract)
+    except ModelCapabilityError as exc:
+        raise ModelRouteCapabilityError(str(exc)) from exc
 
 
 class ModelRouteResolver:
@@ -125,7 +150,8 @@ class ModelRouteResolver:
     ) -> ResolvedModelRoute:
         """Resolve temporary, feature, global, and legacy model choices."""
         normalized_feature = normalize_feature_key(feature_key)
-        required = required_model_types(normalized_feature, task_type)
+        contract = model_call_contract(normalized_feature, task_type)
+        required = contract.accepted_model_types
         candidates: list[ModelRouteCandidate] = []
 
         if preferred_name:
@@ -135,12 +161,11 @@ class ModelRouteResolver:
             ).first()
             if selected is None:
                 raise ModelRouteNotFound("本次选择的模型不存在或已停用。")
-            if not _compatible(selected, required):
-                raise ModelRouteCapabilityError("本次选择的模型不支持该功能所需能力。")
+            _require_compatible(selected, contract)
             candidates.append(
                 ModelRouteCandidate(selected, normalized_feature, "operation")
             )
-            return ResolvedModelRoute(normalized_feature, required, tuple(candidates))
+            return ResolvedModelRoute(normalized_feature, required, contract, tuple(candidates))
 
         feature_policy = None
         if normalized_feature != ModelRoutingPolicy.FeatureKey.GLOBAL:
@@ -149,8 +174,7 @@ class ModelRouteResolver:
                 is_active=True,
             ).select_related("primary_model", "backup_model").first()
             if feature_policy and feature_policy.primary_model_id:
-                if not _compatible(feature_policy.primary_model, required):
-                    raise ModelRouteCapabilityError("功能绑定模型不支持该功能所需能力。")
+                _require_compatible(feature_policy.primary_model, contract)
                 candidates.append(
                     ModelRouteCandidate(
                         feature_policy.primary_model,
@@ -164,8 +188,7 @@ class ModelRouteResolver:
             is_active=True,
         ).select_related("primary_model", "backup_model").first()
         if global_policy and global_policy.primary_model_id and not candidates:
-            if not _compatible(global_policy.primary_model, required):
-                raise ModelRouteCapabilityError("平台全局模型不支持该功能所需能力，请选择兼容模型。")
+            _require_compatible(global_policy.primary_model, contract)
             if not candidates:
                 candidates.append(
                     ModelRouteCandidate(global_policy.primary_model, normalized_feature, "global")
@@ -189,8 +212,7 @@ class ModelRouteResolver:
         policy_for_backup = feature_policy or global_policy
         if policy_for_backup and policy_for_backup.allow_fallback and policy_for_backup.backup_model_id:
             backup = policy_for_backup.backup_model
-            if not _compatible(backup, required):
-                raise ModelRouteCapabilityError("已启用的备用模型不支持该功能所需能力。")
+            _require_compatible(backup, contract)
             if all(candidate.config.pk != backup.pk for candidate in candidates):
                 candidates.append(
                     ModelRouteCandidate(backup, normalized_feature, "backup", True)
@@ -201,6 +223,7 @@ class ModelRouteResolver:
         return ResolvedModelRoute(
             normalized_feature,
             required,
+            contract,
             tuple(candidates),
             allow_fallback=allow_fallback,
             allow_deterministic_baseline=allow_deterministic,

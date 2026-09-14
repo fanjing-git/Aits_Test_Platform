@@ -40,13 +40,16 @@ class RequirementAnalysisApiTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         document_id = response.data["id"]
-        self.assertEqual(self.client.post(f"{self.url}{document_id}/parse/").status_code, status.HTTP_200_OK)
+        parsed_action = self.client.post(f"{self.url}{document_id}/parse/")
+        self.assertEqual(parsed_action.status_code, status.HTTP_200_OK)
+        self.assertEqual(parsed_action.data["skill_execution"]["status"], "completed")
         parsed = self.client.get(f"{self.url}{document_id}/").data
         self.assertTrue(parsed["parse_evidence"])
         self.assertEqual(parsed["parse_confidence"], 1.0)
         analyzed = self.client.post(f"{self.url}{document_id}/analyze/")
         self.assertEqual(analyzed.status_code, status.HTTP_200_OK)
         self.assertIsNotNone(analyzed.data["latest_analysis"])
+        self.assertEqual(analyzed.data["skill_execution"]["status"], "completed")
         linkage = self.client.post(f"{self.url}{document_id}/linkages/")
         self.assertEqual(linkage.status_code, status.HTTP_200_OK)
 

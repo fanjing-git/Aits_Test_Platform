@@ -6,7 +6,7 @@ from django.db import transaction
 from django.db.models import Max
 from rest_framework import serializers
 
-from apps.configs.models import ModelConfig, ModelRoutingPolicy, PromptConfig
+from apps.configs.models import ModelCallRecord, ModelConfig, ModelRoutingPolicy, PromptConfig
 from apps.configs.services import ProviderError, canonical_base
 from apps.configs.routing import required_model_types
 
@@ -131,6 +131,45 @@ class SafeModelSummarySerializer(serializers.ModelSerializer):
             "is_active",
             "priority",
         )
+
+
+class ModelCallRecordSerializer(serializers.ModelSerializer):
+    """Expose diagnostic metadata while excluding prompts, responses, and credentials."""
+
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    cost_status_label = serializers.CharField(
+        source="get_cost_status_display",
+        read_only=True,
+    )
+
+    class Meta:
+        model = ModelCallRecord
+        fields = (
+            "id",
+            "request_id",
+            "feature_key",
+            "task_type",
+            "stage",
+            "model_config",
+            "provider",
+            "model_name",
+            "model_type",
+            "route_source",
+            "is_fallback",
+            "status",
+            "status_label",
+            "failure_stage",
+            "error_code",
+            "retryable",
+            "duration_ms",
+            "cost_status",
+            "cost_status_label",
+            "cost_hint",
+            "trace",
+            "created_at",
+            "finished_at",
+        )
+        read_only_fields = fields
 
 
 class ModelRoutingPolicySerializer(serializers.ModelSerializer):

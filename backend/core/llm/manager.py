@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+import time
 from typing import Any, Protocol, TypeVar
 
+from apps.configs.contracts import model_call_contract
 from apps.configs.models import ModelConfig
+from apps.configs.observability import ModelCallObservability
 from apps.configs.routing import ModelRouteResolver, ResolvedModelRoute
 
 ModelT = TypeVar("ModelT")
@@ -33,8 +36,14 @@ class ModelFactoryNotConfigured(ModelManagerError):
 class ModelFallbackExhausted(ModelManagerError):
     """Raised after every eligible model failed an operation."""
 
-    def __init__(self, attempted_models: Iterable[str]) -> None:
+    def __init__(
+        self,
+        attempted_models: Iterable[str],
+        *,
+        last_error: Exception | None = None,
+    ) -> None:
         self.attempted_models = tuple(attempted_models)
+        self.last_error = last_error
         attempted = ", ".join(self.attempted_models) or "none"
         super().__init__(f"All eligible models failed. Attempted: {attempted}")
 
@@ -92,15 +101,35 @@ class ModelManager:
         preferred_name: str | None = None,
         baseline_requested: bool = False,
         retry_on: tuple[type[Exception], ...] = (Exception,),
+        request_id: str | None = None,
     ) -> ResultT:
         """Execute a new route and only use a policy-enabled backup model."""
-        route = self.resolve_route(
-            feature_key,
-            task_type=task_type,
-            preferred_name=preferred_name,
-            baseline_requested=baseline_requested,
-        )
+        correlation_id = request_id or ModelCallObservability.new_request_id()
+        try:
+            route = self.resolve_route(
+                feature_key,
+                task_type=task_type,
+                preferred_name=preferred_name,
+                baseline_requested=baseline_requested,
+            )
+        except Exception as exc:
+            ModelCallObservability.blocked(
+                feature_key=str(feature_key),
+                task_type=task_type,
+                request_id=correlation_id,
+                error_code=getattr(exc, "code", exc.__class__.__name__),
+                failure_stage="route_resolution",
+            )
+            raise
         if not route.candidates:
+            ModelCallObservability.blocked(
+                feature_key=route.feature_key,
+                task_type=task_type,
+                request_id=correlation_id,
+                error_code="route_unavailable",
+                failure_stage="route_resolution",
+                trace=[{"feature_key": route.feature_key, "available": route.available}],
+            )
             if route.allow_deterministic_baseline and baseline_requested:
                 raise ModelNotFound("已选择确定性基线，但该执行器没有模型运行时。")
             raise ModelNotFound("未配置支持该功能的模型，请先配置全局或功能模型。")
@@ -111,11 +140,30 @@ class ModelManager:
             if index > 0 and (not route.allow_fallback or not candidate.is_fallback):
                 break
             attempted.append(candidate.config.name)
+            started = time.perf_counter()
+            record = ModelCallObservability.start(
+                feature_key=route.feature_key,
+                task_type=task_type,
+                config=candidate.config,
+                route_source=candidate.source,
+                is_fallback=candidate.is_fallback,
+                request_id=correlation_id,
+            )
             try:
-                return operation(self._get_or_create(candidate.config), candidate.config)
+                result = operation(self._get_or_create(candidate.config), candidate.config)
+                ModelCallObservability.complete(
+                    record,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                )
+                return result
             except retry_on as exc:
+                ModelCallObservability.fail(
+                    record,
+                    exc,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                )
                 last_error = exc
-        raise ModelFallbackExhausted(attempted) from last_error
+        raise ModelFallbackExhausted(attempted, last_error=last_error) from last_error
 
     def load(self) -> tuple[ModelConfig, ...]:
         """Reload active configurations in deterministic fallback order."""
@@ -140,10 +188,8 @@ class ModelManager:
     @classmethod
     def resolve_model_type(cls, task_type: str | None) -> str:
         """Map a task label to the capability required from a model."""
-        normalized = (task_type or "chat").strip().lower().replace("-", "_")
-        if normalized in ModelConfig.ModelType.values:
-            return normalized
-        return cls.TASK_MODEL_TYPES.get(normalized, ModelConfig.ModelType.CHAT)
+        contract = model_call_contract(task_type or "chat", task_type=task_type)
+        return contract.accepted_model_types[0]
 
     def candidates(
         self,
@@ -152,19 +198,15 @@ class ModelManager:
         preferred_name: str | None = None,
     ) -> tuple[ModelConfig, ...]:
         """Return eligible configurations, placing an explicit choice first."""
-        model_type = self.resolve_model_type(task_type)
-        normalized_task = (task_type or "chat").strip().lower().replace("-", "_")
-        compatible_text_route = normalized_task in {"requirement_analysis", "case_gen", "case_review"}
-        if compatible_text_route:
-            eligible = [c for c in self._configs if c.model_type in self.TEXT_ANALYSIS_TYPES]
-        else:
-            eligible = [c for c in self._configs if c.model_type == model_type]
-        if compatible_text_route:
+        contract = model_call_contract(task_type or "chat", task_type=task_type)
+        model_type = contract.accepted_model_types[0]
+        eligible = [c for c in self._configs if c.model_type in contract.accepted_model_types]
+        if len(contract.accepted_model_types) > 1:
             eligible.sort(key=lambda config: (-int(config.is_default), config.priority, config.model_type, config.name))
         selected_name = preferred_name or self._selected_names.get(model_type)
-        if not preferred_name and compatible_text_route and not selected_name:
+        if not preferred_name and len(contract.accepted_model_types) > 1 and not selected_name:
             selected_name = next(
-                (self._selected_names.get(candidate_type) for candidate_type in (ModelConfig.ModelType.CHAT, ModelConfig.ModelType.MULTIMODAL, ModelConfig.ModelType.VISION) if self._selected_names.get(candidate_type)),
+                (self._selected_names.get(candidate_type) for candidate_type in contract.accepted_model_types if self._selected_names.get(candidate_type)),
                 None,
             )
         if selected_name:
@@ -214,24 +256,62 @@ class ModelManager:
         *,
         preferred_name: str | None = None,
         retry_on: tuple[type[Exception], ...] = (Exception,),
+        request_id: str | None = None,
     ) -> ResultT:
         """Try eligible models in order and return the first successful result."""
+        correlation_id = request_id or ModelCallObservability.new_request_id()
         attempted: list[str] = []
         last_error: Exception | None = None
-        configs = self.candidates(task_type, preferred_name=preferred_name)
+        try:
+            configs = self.candidates(task_type, preferred_name=preferred_name)
+        except Exception as exc:
+            ModelCallObservability.blocked(
+                feature_key=str(task_type or "chat"),
+                task_type=task_type,
+                request_id=correlation_id,
+                error_code=getattr(exc, "code", exc.__class__.__name__),
+                failure_stage="route_resolution",
+            )
+            raise
         if not configs:
+            ModelCallObservability.blocked(
+                feature_key=str(task_type or "chat"),
+                task_type=task_type,
+                request_id=correlation_id,
+                error_code="route_unavailable",
+                failure_stage="route_resolution",
+            )
             raise ModelNotFound(
                 f"No active model is configured for '{self.resolve_model_type(task_type)}'."
             )
 
         for config in configs:
             attempted.append(config.name)
+            started = time.perf_counter()
+            record = ModelCallObservability.start(
+                feature_key=str(task_type or "chat"),
+                task_type=task_type,
+                config=config,
+                route_source="legacy_fallback",
+                is_fallback=bool(attempted[:-1]),
+                request_id=correlation_id,
+            )
             try:
-                return operation(self._get_or_create(config), config)
+                result = operation(self._get_or_create(config), config)
+                ModelCallObservability.complete(
+                    record,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                )
+                return result
             except retry_on as exc:
+                ModelCallObservability.fail(
+                    record,
+                    exc,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                )
                 last_error = exc
 
-        raise ModelFallbackExhausted(attempted) from last_error
+        raise ModelFallbackExhausted(attempted, last_error=last_error) from last_error
 
     def _get_or_create(self, config: ModelConfig) -> Any:
         if self._factory is None:

@@ -124,6 +124,18 @@ class ModelManagerTests(TestCase):
         self.assertEqual(raised.exception.attempted_models, ("primary", "fallback"))
         self.assertNotIn("secret", str(raised.exception))
 
+    def test_all_failures_keep_last_error_for_callers(self) -> None:
+        self.create_config("primary", priority=1)
+        manager = ModelManager(self.factory)
+        cause = ValueError("provider detail")
+
+        with self.assertRaises(ModelFallbackExhausted) as raised:
+            manager.execute_with_fallback(
+                "chat", lambda runtime, config: (_ for _ in ()).throw(cause)
+            )
+
+        self.assertIs(raised.exception.last_error, cause)
+
     def test_missing_model_and_factory_fail_explicitly(self) -> None:
         manager = ModelManager()
         with self.assertRaises(ModelNotFound):

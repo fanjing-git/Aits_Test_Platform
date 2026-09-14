@@ -17,6 +17,7 @@ from apps.skills.installation import (
     rollback_installation,
     uninstall_installation,
     verify_installation,
+    verify_directory_installation,
 )
 from apps.skills.sources import SkillSourceError, discover_skill_manifest
 from apps.skills.runtime import execute_skill, SkillRuntimeError
@@ -97,8 +98,20 @@ class SkillInstallationViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=("post",))
     def verify(self, request, pk=None):
-        """Verify a caller-provided artifact fixture without downloading or executing code."""
+        """Verify a caller-provided file or Skills folder without executing code."""
         installation = self.get_object()
+        artifact_files = request.data.get("artifact_files")
+        if isinstance(artifact_files, list):
+            try:
+                updated = verify_directory_installation(
+                    installation,
+                    artifact_files,
+                    artifact_version=request.data.get("artifact_version"),
+                    observed_commit_hash=request.data.get("observed_commit_hash"),
+                )
+            except SkillInstallationError as exc:
+                return self._failure(exc)
+            return Response(self.get_serializer(updated).data)
         encoded = request.data.get("artifact_base64")
         if not isinstance(encoded, str) or not encoded:
             return self._failure(SkillInstallationError("artifact_base64 is required for controlled verification"))

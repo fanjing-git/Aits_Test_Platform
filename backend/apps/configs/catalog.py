@@ -5,6 +5,7 @@ Live discovery retains every model, including IDs whose capabilities are unknown
 """
 
 from copy import deepcopy
+from datetime import date
 from typing import Any
 
 from apps.configs.models import ModelConfig
@@ -67,9 +68,29 @@ REFERENCE_MODELS = {
 }
 
 PROVIDER_TYPES = {
-    "anthropic": {"chat", "vision", "other"},
-    "deepseek": {"chat", "vision", "other"},
-    "google": {"chat", "vision", "embedding", "image_generation", "video", "audio", "tts", "realtime", "multimodal", "other"},
+    "openai": {"chat", "vision", "embedding"},
+    "anthropic": {"chat", "vision"},
+    "google": {"chat", "vision", "embedding"},
+    "qwen": {"chat", "vision", "embedding"},
+    "baidu": {"chat"},
+    "deepseek": {"chat", "vision"},
+    "zhipu": {"chat"},
+    "azure": {"chat", "vision", "embedding"},
+    "custom": {"chat", "vision", "embedding"},
+    "local": {"chat", "vision", "embedding"},
+}
+
+PROVIDER_PROTOCOLS = {
+    "openai": "openai_compatible",
+    "anthropic": "anthropic_messages",
+    "google": "google_gemini",
+    "qwen": "openai_compatible",
+    "baidu": "baidu_chat_completions",
+    "deepseek": "openai_compatible",
+    "zhipu": "zhipu_chat_completions",
+    "azure": "azure_openai_compatible",
+    "custom": "openai_compatible_manual",
+    "local": "openai_compatible_local",
 }
 
 CAPABILITY_TYPES = {
@@ -80,6 +101,28 @@ CAPABILITY_TYPES = {
     "Realtime-Audio-Translate": "realtime", "Realtime-Chatting": "realtime",
     "3D-generation": "three_d",
 }
+
+REFERENCE_SNAPSHOT_VERSION = "reference-2026-09-07"
+REFERENCE_SNAPSHOT_UPDATED_AT = "2026-09-07"
+REFERENCE_SNAPSHOT_STALE_AFTER_DAYS = 7
+OFFICIAL_DIRECTORY_PROVIDERS = frozenset({
+    "openai", "anthropic", "google", "qwen", "baidu", "deepseek", "zhipu",
+})
+MANUAL_ONLY_PROVIDERS = frozenset({"custom", "local"})
+
+
+def is_reference_snapshot_stale(
+    updated_at: str,
+    *,
+    today: date | None = None,
+    stale_after_days: int = REFERENCE_SNAPSHOT_STALE_AFTER_DAYS,
+) -> bool:
+    """Return whether a static catalog snapshot is outside its freshness window."""
+    try:
+        snapshot_date = date.fromisoformat(updated_at)
+    except (TypeError, ValueError):
+        return True
+    return (today or date.today()).toordinal() - snapshot_date.toordinal() >= stale_after_days
 
 
 def normalize_model(item: dict[str, Any], provider: str) -> dict[str, Any]:
@@ -119,9 +162,24 @@ def provider_catalog() -> list[dict[str, Any]]:
             for name in names:
                 entry = entries.setdefault(name, {"id": name, "label": name, "types": []})
                 entry["types"].append(kind)
+        is_manual_only = provider in MANUAL_ONLY_PROVIDERS
+        has_reference = bool(entries) and not is_manual_only
         result.append({"value": provider, "label": label, "default_base_url": base_url,
-                       "source_url": source, "source": "reference", "updated_at": "2026-09-07",
-                       "complete": False, "models": list(entries.values()),
+                       "source_url": source, "source": "reference_snapshot" if has_reference else "manual_only",
+                       "source_kind": "reference_snapshot" if has_reference else "manual_only",
+                       "source_label": "官方参考快照" if has_reference else "手工模型入口",
+                       "source_version": REFERENCE_SNAPSHOT_VERSION if has_reference else None,
+                       "updated_at": REFERENCE_SNAPSHOT_UPDATED_AT if has_reference else None,
+                       "stale_after_days": REFERENCE_SNAPSHOT_STALE_AFTER_DAYS if has_reference else None,
+                       "is_stale": is_reference_snapshot_stale(REFERENCE_SNAPSHOT_UPDATED_AT)
+                       if has_reference else False,
+                       "directory_state": "reference_only" if has_reference else "manual_only",
+                       "account_access_state": "not_checked",
+                       "model_call_state": "not_checked",
+                       "official_directory_supported": provider in OFFICIAL_DIRECTORY_PROVIDERS,
+                       "manual_model_id_allowed": True,
+                       "complete": False, "protocol": PROVIDER_PROTOCOLS[provider],
+                       "models": list(entries.values()) if has_reference else [],
                        "types": [{"value": key, "label": name, "models": deepcopy(REFERENCE_MODELS.get(provider, {}).get(key, []))}
                                  for key, name in TYPE_LABELS.items()
                                  if key in PROVIDER_TYPES.get(provider, TYPE_LABELS)]})

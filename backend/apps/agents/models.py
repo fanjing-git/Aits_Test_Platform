@@ -144,3 +144,94 @@ class Agent(models.Model):
             errors["parameters"] = exc.messages
         if errors:
             raise ValidationError(errors)
+
+
+class AgentExecution(models.Model):
+    """Persist one controlled model execution and its sanitized audit trail."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        RUNNING = "running", "Running"
+        PAUSED = "paused", "Paused"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+        CANCELLED = "cancelled", "Cancelled"
+
+    class InterruptSignal(models.TextChoices):
+        NONE = "", ""
+        PAUSE = "pause", "pause"
+        CANCEL = "cancel", "cancel"
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    agent = models.ForeignKey(
+        Agent,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="executions",
+        verbose_name="Agent configuration",
+    )
+    project = models.ForeignKey(
+        "projects.Project",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="agent_executions",
+        verbose_name="Project",
+    )
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="agent_executions",
+        verbose_name="Requested by",
+    )
+    agent_name = models.CharField("Agent name snapshot", max_length=100)
+    agent_version = models.PositiveIntegerField("Agent version snapshot", default=1)
+    input_text = models.TextField("Input", max_length=20000)
+    status = models.CharField(
+        "Execution status",
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    phase = models.CharField("Execution phase", max_length=40, blank=True, default="")
+    interrupt_signal = models.CharField(
+        "Interrupt signal",
+        max_length=20,
+        choices=InterruptSignal.choices,
+        blank=True,
+        default="",
+    )
+    model_route = models.JSONField("Model route", default=dict, blank=True)
+    trace = models.JSONField("Audit trace", default=list, blank=True)
+    result = models.JSONField("Execution result", default=dict, blank=True)
+    error_code = models.CharField("Error code", max_length=80, blank=True, default="")
+    error_message = models.TextField("Error message", blank=True, default="")
+    retryable = models.BooleanField("Retryable", default=False)
+    task_id = models.CharField("Task ID", max_length=255, blank=True, default="")
+    started_at = models.DateTimeField("Started at", null=True, blank=True)
+    finished_at = models.DateTimeField("Finished at", null=True, blank=True)
+    created_at = models.DateTimeField("Created at", auto_now_add=True)
+    updated_at = models.DateTimeField("Updated at", auto_now=True)
+
+    class Meta:
+        verbose_name = "Agent execution"
+        verbose_name_plural = "Agent executions"
+        ordering = ("-created_at", "-pk")
+        indexes = [
+            models.Index(
+                fields=("project", "status", "created_at"),
+                name="agents_exec_project_status_idx",
+            ),
+            models.Index(
+                fields=("agent", "created_at"),
+                name="agents_exec_agent_time_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        """Return a safe human-readable execution label."""
+        return f"{self.agent_name} v{self.agent_version} / {self.status}"
