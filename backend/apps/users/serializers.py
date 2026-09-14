@@ -243,6 +243,31 @@ class RegistrationSerializer(serializers.ModelSerializer):
         return user
 
 
+class BootstrapAdminSerializer(serializers.Serializer):
+    """Validate the one-time first-run administrator form."""
+
+    username = serializers.CharField(max_length=150)
+    password = serializers.CharField(write_only=True, trim_whitespace=False)
+    password_confirm = serializers.CharField(write_only=True, trim_whitespace=False)
+
+    def validate_username(self, value: str) -> str:
+        """Normalize the administrator username without silently changing it."""
+        normalized = value.strip()
+        if not normalized:
+            raise serializers.ValidationError("Enter an administrator username.")
+        try:
+            User._meta.get_field("username").run_validators(normalized)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages) from exc
+        return normalized
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        """Require an explicit password confirmation before the one-time action."""
+        if attrs["password"] != attrs["password_confirm"]:
+            raise serializers.ValidationError({"password_confirm": "Passwords do not match."})
+        return attrs
+
+
 class AdminInvitationSerializer(serializers.Serializer):
     """Validate the minimum data required to invite a colleague."""
 

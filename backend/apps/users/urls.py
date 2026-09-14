@@ -14,12 +14,16 @@ from apps.users.views import (
     UserPasswordResetLinkView,
     AccountActivationView,
     AccountAuditEventListView,
+    BootstrapAdminView,
+    BootstrapStatusView,
     PasswordResetView,
 )
 
 app_name = "users"
 
 urlpatterns = [
+    path("bootstrap/status/", BootstrapStatusView.as_view(), name="bootstrap-status"),
+    path("bootstrap/", BootstrapAdminView.as_view(), name="bootstrap-admin"),
     path("register/", RegisterView.as_view(), name="register"),
     path("login/", LoginView.as_view(), name="login"),
     path("refresh/", TokenRefreshView.as_view(), name="token-refresh"),

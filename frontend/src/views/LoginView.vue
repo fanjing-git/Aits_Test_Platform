@@ -1,9 +1,10 @@
 <script setup>
-import { reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
 import AuthBrandPanel from '../components/auth/AuthBrandPanel.vue'
+import { getBootstrapStatus } from '../api/bootstrap'
 import { useUserStore } from '../stores/user'
 
 const router = useRouter()
@@ -32,6 +33,15 @@ async function submit() {
     ElMessage.error(getErrorMessage(error))
   }
 }
+
+onMounted(async () => {
+  try {
+    const status = await getBootstrapStatus()
+    if (status.setup_required) await router.replace('/setup')
+  } catch {
+    // Login remains available when the status probe is unavailable.
+  }
+})
 </script>
 
 <template>

@@ -7,16 +7,27 @@ import secrets
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
-from apps.users.models import AccountActionToken, AccountAuditEvent, UserProfile
+from apps.users.models import (
+    AccountActionToken,
+    AccountAuditEvent,
+    PlatformBootstrapState,
+    UserProfile,
+)
 
 User = get_user_model()
 
 
 class InvalidAccountActionToken(ValueError):
     """Raised when an account action token is missing, expired or already used."""
+
+
+class BootstrapConflict(ValueError):
+    """Raised when first-run administrator setup is already closed or collides."""
 
 
 def record_audit_event(
@@ -108,6 +119,65 @@ def revoke_action_tokens(user: User, kind: str | None = None) -> int:
     if kind:
         filters["kind"] = kind
     return AccountActionToken.objects.filter(**filters).update(used_at=timezone.now())
+
+
+@transaction.atomic
+def bootstrap_platform_admin(
+    *,
+    username: str,
+    password: str,
+    source: str,
+    require_empty_platform: bool = True,
+) -> User:
+    """Create one administrator safely without resetting any existing account."""
+    normalized_username = username.strip()
+    if not normalized_username:
+        raise BootstrapConflict("Administrator username is required.")
+
+    state, _created = PlatformBootstrapState.objects.select_for_update().get_or_create(
+        singleton_key=1,
+    )
+    active_admin_exists = User.objects.filter(
+        is_active=True,
+        profile__role=UserProfile.Role.ADMIN,
+    ).exists()
+    if require_empty_platform and (state.completed_at is not None or active_admin_exists):
+        raise BootstrapConflict("Platform administrator setup has already been completed.")
+
+    existing = User.objects.filter(username__iexact=normalized_username).first()
+    if existing is not None:
+        try:
+            existing_role = existing.profile.role
+        except UserProfile.DoesNotExist:
+            existing_role = None
+        if existing.is_active and existing_role == UserProfile.Role.ADMIN:
+            state.completed_at = state.completed_at or timezone.now()
+            state.save(update_fields=("completed_at",))
+            return existing
+        raise BootstrapConflict("The requested administrator username is already in use.")
+
+    candidate = User(username=normalized_username, is_active=True)
+    try:
+        validate_password(password, user=candidate)
+    except ValidationError as exc:
+        raise BootstrapConflict("The administrator password does not meet password policy.") from exc
+
+    user = User.objects.create_user(
+        username=normalized_username,
+        password=password,
+        is_active=True,
+    )
+    user.profile.role = UserProfile.Role.ADMIN
+    user.profile.save(update_fields=("role", "updated_at"))
+    state.completed_at = timezone.now()
+    state.save(update_fields=("completed_at",))
+    record_audit_event(
+        event=AccountAuditEvent.Event.ACCOUNT_UPDATED,
+        target=user,
+        actor=None,
+        metadata={"source": source, "role": UserProfile.Role.ADMIN},
+    )
+    return user
 
 
 @transaction.atomic

@@ -158,3 +158,21 @@ class AccountAuditEvent(models.Model):
     def __str__(self) -> str:
         """Return an audit label without exposing credentials or tokens."""
         return f"{self.target_username} / {self.get_event_display()}"
+
+
+class PlatformBootstrapState(models.Model):
+    """Serialize first-run administrator initialization across concurrent requests."""
+
+    singleton_key = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        """Keep the lock model internal to the users application."""
+
+        verbose_name = "Platform bootstrap state"
+        verbose_name_plural = "Platform bootstrap state"
+
+    def __str__(self) -> str:
+        """Return a safe singleton label."""
+        return "platform-bootstrap"

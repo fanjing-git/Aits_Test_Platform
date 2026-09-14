@@ -19,6 +19,12 @@ const router = createRouter({
       meta: { guestOnly: true },
     },
     {
+      path: '/setup',
+      name: 'bootstrap-setup',
+      component: () => import('../views/BootstrapSetupView.vue'),
+      meta: { guestOnly: true },
+    },
+    {
       path: '/activate',
       name: 'activate-account',
       component: () => import('../views/AccountActionView.vue'),

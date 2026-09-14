@@ -15,19 +15,57 @@ from apps.users.serializers import (
     AccountAuditEventSerializer,
     AdminInvitationSerializer,
     AccountTokenObtainPairSerializer,
+    BootstrapAdminSerializer,
     RegistrationSerializer,
     UserSerializer,
     UserManagementSerializer,
 )
 from apps.users.permissions import IsAdminRole
-from apps.users.models import AccountActionToken, AccountAuditEvent
+from apps.users.models import AccountActionToken, AccountAuditEvent, UserProfile
 from apps.users.services import (
+    BootstrapConflict,
+    bootstrap_platform_admin,
     create_action_token,
     record_audit_event,
     revoke_action_tokens,
 )
 
 User = get_user_model()
+
+
+class BootstrapStatusView(APIView):
+    """Report whether the one-time platform administrator setup is available."""
+
+    permission_classes = (permissions.AllowAny,)
+
+    def get(self, request: Request) -> Response:
+        """Return setup state without exposing users, credentials, or database details."""
+        del request
+        setup_required = not User.objects.filter(
+            is_active=True,
+            profile__role=UserProfile.Role.ADMIN,
+        ).exists()
+        return Response({"setup_required": setup_required})
+
+
+class BootstrapAdminView(APIView):
+    """Create the first platform administrator from the public setup page."""
+
+    permission_classes = (permissions.AllowAny,)
+
+    def post(self, request: Request) -> Response:
+        """Create an administrator once and return safe account details."""
+        serializer = BootstrapAdminSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            user = bootstrap_platform_admin(
+                username=serializer.validated_data["username"],
+                password=serializer.validated_data["password"],
+                source="first_run_setup",
+            )
+        except BootstrapConflict as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
 
 
 class RegisterView(generics.CreateAPIView):
