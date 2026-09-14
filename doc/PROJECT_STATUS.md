@@ -2,18 +2,20 @@
 
 Updated: 2026-09-14 (Asia/Shanghai)
 
-## 2026-09-14 T147 首个管理员初始化与首次安装闭环（仅本地）
+## 2026-09-14 T147 首个管理员初始化与首次安装闭环（本地与目标部署验收）
 
 - 补漏原因：目标部署数据库保留旧 `admin` 账号，但未交付其密码；`platform_admin` 未被初始化，导致代码部署成功而用户无法登录验收。该问题不是账号重置，而是首个管理员交接流程缺失。
 - 实现：新增 `python manage.py bootstrap_platform_admin` 和首次安装 REST/UI。新部署没有管理员时访问 `/login` 自动进入 `/setup`，用户自己设置管理员账号和密码；初始化后入口关闭并返回 409，重复启动不改密码；同名普通账号、非活动账号或不符合密码策略时安全阻断；无密码配置时 Compose 使用 `--allow-unconfigured` 正常启动并开放 `/setup`；不接受命令行密码，不输出密码。
 - 并发/持久化：新增 `users.0004_platformbootstrapstate` 单例锁迁移，串行化首次初始化；部署环境变量仍作为无人值守部署兜底，真实密码必须保留在未提交的部署密钥或 `.env.remote` 中。
-- 部署模板：远程 Compose 后端启动时执行幂等初始化；当前未修改目标服务器、未部署本次变更。
+- 部署模板：远程 Compose 后端启动时执行幂等初始化；`6162c83` 已部署到 `124.222.221.128`，`users.0004_platformbootstrapstate` 已应用，原 PostgreSQL 数据卷保留。
 - 影响矩阵：`PlatformBootstrapState`/bootstrap Service → 首次安装 REST、管理命令和 JWT 登录；`BootstrapSetupView.vue`/`bootstrap.js` → `/login` 首次访问跳转和管理员工作台；既有注册、邀请、激活、重置、角色管理 REST 和用户管理页面保持兼容。
 - 第一轮专项：首次状态/创建/关闭、真实 JWT 登录并访问管理员接口、重复部署保留原密码、同名普通账号不变、无管理员无密码阻断、无密码配置正常启动、弱密码阻断、旧管理员安全启动 9/9；原 T147 账号邀请/激活/重置/权限专项包含在内。
 - 第二轮回归：最终代码状态后端全量 411/411；Django check 通过；迁移检查无变更；compileall 通过；前端 Vite 生产构建通过；本地 5173、8000 和 `/api/health/` 均 HTTP 200；Compose YAML 本地解析通过。由于本机未安装 Docker CLI，未执行本地 `docker compose config`。
 - 浏览器链路：清除旧 JWT 后，`platform_admin` 本地登录 HTTP 200，`/api/auth/me/` HTTP 200，工作台显示 `admin`；Network 关键认证请求均 200，Console 0 errors。首次安装页面的业务边界由 REST 专项覆盖；已有管理员状态下 `/setup` 自动关闭。
 - 编码复核：本次整改后对已跟踪的用户页面、用户 API 和模型文案源码执行乱码检索，未发现页面级乱码；补正一处历史测试夹具中的乱码样例为“登录”。中文界面验收仍需以目标服务器部署后的浏览器复核为准。
-- 下一步：等待用户明确授权推送并部署；未收到授权前不连接、不修改目标服务器。
+- 目标验收：前端 `8090` 与后端健康接口均 HTTP 200，`/api/auth/bootstrap/status/` 返回 `setup_required=false`；目标浏览器使用 `platform_admin` 登录 200，`/api/auth/me/` 200，工作台和用户权限页显示管理员；直接访问 `/setup` 自动回到工作台，Console 0 errors。目标原有 `admin` 未重置；发现目标已有 `platform_admin` 为 viewer 后，仅按本次明确部署要求提升为 admin，未修改密码；旧前端 dist 保留为 `dist.backup-6162c83`。
+- Git/交付：`316e40b` 完成首次安装闭环，`6162c83` 补正最后一处历史测试夹具乱码并更新状态；两次均已推送 `origin/master`。目标未新增项目/智能体测试数据，未执行数据清理或删除。
+- 下一步：按门禁停止等待用户确认；后续若要把首次安装页做成新客户部署向导或继续统一历史英文/中文文案，另立任务处理。
 
 ## 2026-09-14 T161 官方模型目录与选择器闭环完成
 
