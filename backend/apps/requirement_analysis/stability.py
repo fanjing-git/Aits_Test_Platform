@@ -10,6 +10,90 @@ from typing import Any
 
 ANALYSIS_SCHEMA_VERSION = "requirement-analysis-v1"
 COUNT_FIELDS = ("modules", "functions", "linkages", "test_points")
+TEST_POINT_TYPES = {"positive", "negative", "boundary", "security", "linkage", "performance"}
+
+
+def analysis_mapping_gaps(payload: Mapping[str, Any]) -> dict[str, list[str]]:
+    """Find broken module/function/test-point relationships in an analysis."""
+    modules = payload.get("modules") if isinstance(payload.get("modules"), list) else []
+    functions = payload.get("functions") if isinstance(payload.get("functions"), list) else []
+    linkages = payload.get("linkages") if isinstance(payload.get("linkages"), list) else []
+    test_points = payload.get("test_points") if isinstance(payload.get("test_points"), list) else []
+    module_ids = {str(item.get("id")) for item in modules if isinstance(item, Mapping) and item.get("id")}
+    valid_function_ids = {
+        str(item.get("id"))
+        for item in functions
+        if isinstance(item, Mapping) and item.get("id") and str(item.get("module_id", "")) in module_ids
+    }
+    valid_linkage_ids = {
+        str(item.get("id"))
+        for item in linkages
+        if isinstance(item, Mapping)
+        and item.get("id")
+        and str(item.get("from") or item.get("source_function_id") or "") in valid_function_ids
+        and str(item.get("to") or item.get("target_function_id") or "") in valid_function_ids
+    }
+    gaps = {
+        "modules_without_name": sorted(
+            str(item.get("id"))
+            for item in modules
+            if isinstance(item, Mapping)
+            and item.get("id")
+            and not str(item.get("name", "")).strip()
+        ),
+        "functions_without_module": sorted(
+            str(item.get("id"))
+            for item in functions
+            if isinstance(item, Mapping)
+            and item.get("id")
+            and str(item.get("module_id", "")) not in module_ids
+        ),
+        "functions_without_name": sorted(
+            str(item.get("id"))
+            for item in functions
+            if isinstance(item, Mapping)
+            and item.get("id")
+            and not str(item.get("name", "")).strip()
+        ),
+        "invalid_linkages": sorted(
+            str(item.get("id"))
+            for item in linkages
+            if isinstance(item, Mapping)
+            and item.get("id")
+            and str(item.get("id")) not in valid_linkage_ids
+        ),
+        "test_points_without_parent": sorted(
+            str(item.get("id"))
+            for item in test_points
+            if isinstance(item, Mapping)
+            and item.get("id")
+            and not (
+                str(item.get("function_id") or item.get("source_function_id") or "") in valid_function_ids
+                or str(item.get("scenario_id") or item.get("linkage_id") or "") in valid_linkage_ids
+            )
+        ),
+        "test_points_without_description": sorted(
+            str(item.get("id"))
+            for item in test_points
+            if isinstance(item, Mapping)
+            and item.get("id")
+            and not str(item.get("description", "")).strip()
+        ),
+        "test_points_without_type": sorted(
+            str(item.get("id"))
+            for item in test_points
+            if isinstance(item, Mapping) and item.get("id") and not str(item.get("type", "")).strip()
+        ),
+        "test_points_with_unknown_type": sorted(
+            str(item.get("id"))
+            for item in test_points
+            if isinstance(item, Mapping)
+            and item.get("id")
+            and str(item.get("type", "")).strip()
+            and str(item.get("type", "")).strip().casefold() not in TEST_POINT_TYPES
+        ),
+    }
+    return {key: value for key, value in gaps.items() if value}
 
 
 def _digest(value: Any) -> str:
@@ -137,12 +221,16 @@ def assess_quality(
     structured_status = str(structured.get("status", "completed"))
     counts = count_payload(payload)
     comparison = compare_counts(counts, previous_baseline)
+    mapping_gaps = analysis_mapping_gaps(payload)
     uncovered_ids = sorted(evidence_ids - covered_ids)
     has_inventory = bool(evidence_ids)
     coverage_ratio = round(len(covered_ids) / max(1, len(evidence_ids)), 4) if has_inventory else 0.0
     if structured_status != "completed":
         quality_status = "partial"
         reason = "存在未完成或失败的结构化分段。"
+    elif mapping_gaps:
+        quality_status = "needs_review"
+        reason = "最终分析结果存在模块/功能点归属、名称、测试点描述或测试类型缺失，不能进入用例生成。"
     elif has_inventory and (uncovered_ids or uncited_items):
         quality_status = "needs_review"
         reason = "存在未覆盖证据或未提供证据引用的分析项。"
@@ -169,6 +257,7 @@ def assess_quality(
             "uncovered_evidence_ids": uncovered_ids,
             "uncited_item_count": uncited_items,
         },
+        "mapping_gaps": mapping_gaps,
         "counts": counts,
         "comparison": comparison,
         "needs_confirmation": quality_status != "complete" or bool(coverage_report.get("needs_confirmation")),
@@ -178,6 +267,8 @@ def assess_quality(
 __all__ = [
     "ANALYSIS_SCHEMA_VERSION",
     "COUNT_FIELDS",
+    "TEST_POINT_TYPES",
+    "analysis_mapping_gaps",
     "analysis_baseline",
     "assess_quality",
     "build_analysis_fingerprint",

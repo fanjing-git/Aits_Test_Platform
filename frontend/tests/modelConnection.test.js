@@ -20,6 +20,15 @@ test('does not expose unknown provider errors as an empty message', () => {
   assert.match(result.suggestion, /服务器网络/)
 })
 
+test('labels provider response timeouts separately from blocked TCP connections', () => {
+  const result = connectionFailure({ response: { data: {
+    code: 'provider_timeout',
+    message: '模型供应商响应超时。',
+  } } })
+  assert.equal(result.stage, '模型响应超时')
+  assert.match(result.suggestion, /超时配置/)
+})
+
 test('keeps stable labels for security and authentication failures', () => {
   assert.equal(connectionStageLabel('unsafe_target'), '目标安全校验')
   assert.equal(connectionStageLabel('auth_failed'), '供应商鉴权')

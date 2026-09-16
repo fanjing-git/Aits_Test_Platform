@@ -11,7 +11,7 @@ from apps.configs.models import ModelConfig, ModelRoutingPolicy
 from apps.case_generation.generator import CaseGenerationError, generate_document_cases
 from apps.projects.models import Project
 from apps.requirement_analysis.models import RequirementDocument
-from apps.requirement_analysis.stability import assess_quality
+from apps.requirement_analysis.stability import analysis_mapping_gaps, assess_quality
 
 
 def _payload(module_count: int) -> dict:
@@ -21,7 +21,7 @@ def _payload(module_count: int) -> dict:
         for index in range(1, module_count + 1)
     ]
     functions = [
-        {"id": f"function-{index}", "name": f"功能点{index}", "evidence_ids": ["evidence-1", "evidence-2"]}
+        {"id": f"function-{index}", "module_id": f"module-{index}", "name": f"功能点{index}", "evidence_ids": ["evidence-1", "evidence-2"]}
         for index in range(1, module_count + 1)
     ]
     return {
@@ -29,7 +29,7 @@ def _payload(module_count: int) -> dict:
         "functions": functions,
         "linkages": [],
         "test_points": [
-            {"id": f"point-{index}", "description": f"测试点{index}", "evidence_ids": ["evidence-1", "evidence-2"]}
+            {"id": f"point-{index}", "function_id": f"function-{index}", "type": "positive", "description": f"测试点{index}", "evidence_ids": ["evidence-1", "evidence-2"]}
             for index in range(1, module_count + 1)
         ],
         "coverage_report": {},
@@ -51,6 +51,34 @@ class RequirementAnalysisQualityTests(SimpleTestCase):
 
         self.assertEqual(result["quality_status"], "needs_review")
         self.assertEqual(result["evidence_coverage"]["uncovered_evidence_ids"], ["evidence-2"])
+
+    def test_broken_analysis_hierarchy_requires_review(self) -> None:
+        result = assess_quality(
+            payload={
+                "modules": [{"id": "module-1", "name": "登录", "evidence_ids": ["evidence-1"]}],
+                "functions": [{"id": "function-1", "name": "登录", "evidence_ids": ["evidence-1"]}],
+                "linkages": [],
+                "test_points": [{"id": "point-1", "description": "正常登录", "evidence_ids": ["evidence-1"]}],
+            },
+            evidence=[{"id": "evidence-1", "text": "登录"}],
+            coverage_report={"structured_generation": {"status": "completed"}},
+        )
+
+        self.assertEqual(result["quality_status"], "needs_review")
+        self.assertEqual(result["mapping_gaps"]["functions_without_module"], ["function-1"])
+        self.assertEqual(result["mapping_gaps"]["test_points_without_parent"], ["point-1"])
+
+    def test_missing_human_readable_fields_requires_review(self) -> None:
+        gaps = analysis_mapping_gaps({
+            "modules": [{"id": "module-1", "evidence_ids": ["evidence-1"]}],
+            "functions": [{"id": "function-1", "module_id": "module-1", "evidence_ids": ["evidence-1"]}],
+            "linkages": [],
+            "test_points": [{"id": "point-1", "function_id": "function-1", "type": "positive", "evidence_ids": ["evidence-1"]}],
+        })
+
+        self.assertEqual(gaps["modules_without_name"], ["module-1"])
+        self.assertEqual(gaps["functions_without_name"], ["function-1"])
+        self.assertEqual(gaps["test_points_without_description"], ["point-1"])
 
 
 class RequirementAnalysisRepeatRunTests(TestCase):

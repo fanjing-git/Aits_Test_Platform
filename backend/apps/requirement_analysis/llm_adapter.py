@@ -261,9 +261,21 @@ class RequirementModelAdapter:
         """Execute bounded structured segments and apply a caller validator."""
         evidence_ids = {str(item.get("id")) for item in evidence if item.get("id")}
         instruction = instant_prompt or (
-            "只输出 JSON；每个功能和测试点必须引用可验证 evidence_ids；无法确认的内容放入 needs_confirmation。 "
+            "只输出 JSON。modules 中每个对象必须包含可读的非空 name；functions 中每个对象必须包含可读的非空 name 和 description；test_points 中每个对象必须包含可读的非空 description；"
+            "modules、functions、linkages、test_points 中的每一个对象都必须包含非空 evidence_ids 数组，"
+            "functions 中每个对象必须通过 module_id 关联 modules 中已输出的模块，test_points 中每个对象必须通过 function_id 关联 functions 中已输出的功能点；"
+            "联动测试点必须通过 scenario_id 关联 linkages 中的场景，linkages 的 from/to 必须关联已输出的功能点。"
+            "每个 test_points 对象必须填写 type，且只能使用 positive（正向）、negative（异常）、boundary（边界）、security（安全）、linkage（联动）、performance（性能）之一。"
+            "数组中的每个 ID 必须来自当前输入的 evidence.id；没有证据支持的对象不要生成，不能留空或省略该字段。"
+            "本段提供的每一条 evidence 都必须至少被一个输出对象引用；无法归类的证据写入 coverage_report.uncovered_evidence_ids，"
+            "不要用虚构内容填充。无法确认的内容放入 needs_confirmation。 "
             "Output ONLY a JSON object with top-level keys modules, functions, linkages, test_points, coverage_report. "
             "The first four keys MUST be arrays of objects; every item MUST have a unique string id. "
+            "Every function MUST have a valid module_id and every non-linkage test point MUST have a valid function_id. "
+            "Every linkage test point MUST have a valid scenario_id and every linkage MUST reference valid function ids. "
+            "Every module and function MUST have a non-empty human-readable name, and every test point MUST have a non-empty description. "
+            "Every test point MUST have exactly one type from positive, negative, boundary, security, linkage, performance. "
+            "Every item MUST contain at least one valid evidence_ids value. "
             "Use only evidence_ids present in the input, do not echo the input text/evidence, and do not use Markdown."
         )
         resolved = self.prompt_manager.resolve(

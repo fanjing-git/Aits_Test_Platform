@@ -1,17 +1,19 @@
 """Focused tests for requirement document parsing formats and safe failures."""
 import io
+import tempfile
 import zipfile
 from unittest.mock import patch
+from pathlib import Path
 
 from docx import Document as WordDocument
 from django.contrib.auth import get_user_model
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from pypdf import PdfWriter
 
 from apps.requirement_analysis.adapters import DocumentContent
 from apps.projects.models import Project
 from apps.requirement_analysis.models import RequirementDocument
-from apps.requirement_analysis.parser import DocumentParseError, parse_document_bytes, parse_online, parse_requirement_document
+from apps.requirement_analysis.parser import DocumentParseError, parse_document_bytes, parse_file, parse_online, parse_requirement_document
 
 
 class RequirementParserTests(SimpleTestCase):
@@ -56,6 +58,20 @@ class RequirementParserTests(SimpleTestCase):
             parse_document_bytes(b"x" * (10 * 1024 * 1024 + 1), "large.txt")
         with self.assertRaisesRegex(DocumentParseError, "OCR"):
             parse_document_bytes(b"not-an-image", "screen.png")
+
+    @override_settings(REQUIREMENT_DOCUMENT_MAX_BYTES=8)
+    def test_configured_limit_is_shared_by_bytes_and_file_parsers(self) -> None:
+        with self.assertRaisesRegex(DocumentParseError, "超过.*限制"):
+            parse_document_bytes(b"123456789", "small.txt")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "large.txt"
+            path.write_bytes(b"123456789")
+            with self.assertRaisesRegex(DocumentParseError, "超过.*限制"):
+                parse_file(path)
+
+    def test_file_parser_distinguishes_missing_file_from_oversized_file(self) -> None:
+        with self.assertRaisesRegex(DocumentParseError, "文件不存在"):
+            parse_file("E:/does-not-exist/requirement.md")
 
     def test_text_parser_keeps_line_evidence(self) -> None:
         result = parse_document_bytes("# 登录\n用户提交账号。".encode("utf-8"), "requirement.md")

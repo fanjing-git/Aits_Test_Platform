@@ -10,6 +10,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.configs.deployment import DeploymentAccessService
 from apps.users.serializers import (
     AccountActionSerializer,
     AccountAuditEventSerializer,
@@ -135,6 +136,7 @@ class UserManagementListView(generics.ListAPIView):
             {
                 "user": UserManagementSerializer(result["user"]).data,
                 "activation_path": f"/activate?token={result['raw_token']}",
+                "activation_url": DeploymentAccessService.build_link(f"/activate?token={result['raw_token']}"),
                 "expires_at": result["token"].expires_at,
             },
             status=status.HTTP_201_CREATED,
@@ -204,6 +206,7 @@ class UserInvitationResendView(APIView):
             {
                 "user": UserManagementSerializer(user).data,
                 "activation_path": f"/activate?token={raw_token}",
+                "activation_url": DeploymentAccessService.build_link(f"/activate?token={raw_token}"),
                 "expires_at": token.expires_at,
             },
             status=status.HTTP_200_OK,
@@ -237,6 +240,7 @@ class UserPasswordResetLinkView(APIView):
             {
                 "user": UserManagementSerializer(user).data,
                 "reset_path": f"/reset-password?token={raw_token}",
+                "reset_url": DeploymentAccessService.build_link(f"/reset-password?token={raw_token}"),
                 "expires_at": token.expires_at,
             },
             status=status.HTTP_200_OK,

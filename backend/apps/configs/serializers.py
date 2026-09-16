@@ -6,6 +6,25 @@ from django.db import transaction
 from django.db.models import Max
 from rest_framework import serializers
 
+class DeploymentAccessSerializer(serializers.Serializer):
+    """Serialize safe administrator-facing deployment entrypoint metadata."""
+
+    configured = serializers.BooleanField()
+    app_url = serializers.CharField(allow_blank=True)
+    api_url = serializers.CharField(allow_blank=True)
+    protocol = serializers.CharField(allow_blank=True)
+    port = serializers.IntegerField(allow_null=True)
+    access_scope = serializers.CharField()
+    access_scope_label = serializers.CharField()
+    tls_status = serializers.CharField()
+    tls_status_label = serializers.CharField()
+    health_check_url = serializers.CharField(allow_blank=True)
+    health_status = serializers.CharField()
+    health_status_label = serializers.CharField()
+    health_message = serializers.CharField()
+    last_checked_at = serializers.CharField(allow_null=True, allow_blank=True)
+    warning = serializers.CharField()
+
 from apps.configs.models import ModelCallRecord, ModelConfig, ModelRoutingPolicy, PromptConfig
 from apps.configs.services import ProviderError, canonical_base
 from apps.configs.routing import required_model_types

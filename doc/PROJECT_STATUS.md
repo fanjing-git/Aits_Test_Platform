@@ -1,6 +1,207 @@
 ﻿# AI 智能体测试平台开发状态
 
-Updated: 2026-09-14 (Asia/Shanghai)
+Updated: 2026-09-16 (Asia/Shanghai) — 今日归档已刷新
+
+## 2026-09-16 T155C 需求分析五轮递进复核方案（已评审，今日开发归档）
+
+- 本轮已完成文档评审确认，尚未修改 T155C 业务代码、数据库、模型配置或远程环境；当前系统仍是“单轮模型调用 + 长文档技术分段”，不是五轮递进需求分析。
+- 已在 `doc/PRD_V5.0.md` 增加 V5.4 草案：明确五轮分别负责基础拆解、异常风险、边界状态、关系联动和最终质量复核；后续轮次必须读取完整原文、全部证据和前轮累计结果，只补充/修正/去重。
+- 已在 `doc/TASKS_V5.0.md` 新增 T155C 并标记为进行中，将 T156/T160 依赖补充为必须经过 T155C；DoD 覆盖轮次与分段分离、覆盖率口径、失败恢复、前端进度、人工审核和费用边界。
+- 已在 `doc/TECH_ARCH_V5.0.md` 登记 T155C 的两级运行模型、轮次审计状态、REST/前端进度边界和调用预算；未新增数据库字段或依赖，具体存储方案留在实现影响分析中确定。
+- 关键决策：五轮提高覆盖率但不承诺模型必然 100% 覆盖；未有原文依据的内容必须标记待人工确认或未覆盖，不能为凑覆盖率虚构测试点。
+- 今日归档结论：用户已确认 PRD/TASK，T155C 尚未开始业务编码；今天完成了任务定位、文档链核对和开发前边界确认，未修改业务代码、数据库、模型配置或远程环境。
+- 下次续接入口：用户在 Codex 命令行输入“继续”后，先按 `doc/AGENTS.md` 执行完整会话启动审计并恢复/检查前后端服务；审计通过后继续执行 T155C 开发前审计收尾，再开始编码。
+- 下次第一项工作：基于现有需求分析调用链完成 T155C 变更影响矩阵，确定五轮结果的持久化/兼容方案，随后按“后端 Service → REST API → 前端入口 → 真实本地 API 联调 → 用户验收”闭环实现。
+- 当前任务边界：只开发 T155C“需求分析五轮递进复核与覆盖补全”，不提前开发 T060 评估打分，也不跨入 T156/T160；T060 仍是后续等待任务。
+- 今日服务与交付状态：本地 `5173`、`8000` 和 `/api/health/` 已验证 HTTP 200；未新增迁移、依赖或环境变量；未提交、未推送、未部署。
+- 规划补充：已将上下文记忆作为 V5.5 二期预留写入 PRD/TASK，明确“短期对话记忆 → 会话恢复 → 项目记忆 → 长期知识记忆 → 个性化偏好记忆”五层路线，以及 LangGraph + `MemoryService` + `ContextAssembler` 底座方向；不改变当前 T155C 范围。
+- 编码规范补充：根目录规则已明确中文源码/文档统一 UTF-8，PowerShell 必须显式使用 `-Encoding utf8`；本次已验证任务文档为正常 UTF-8，乱码属于读取方式问题，未发生文件内容损坏。
+- 最新归档确认：本文件已包含今天全部交接内容；下次输入“继续”时，以本节为最新状态，不重复执行已完成的文档规划和历史缺陷验证。
+
+## 2026-09-16 需求分析审核与用例生成逻辑闭环修复（代码与真实本地验收完成）
+
+- 运行时隐患修复：本地 8000 端口曾被使用临时测试 Fernet 密钥的后端进程占用，而数据库模型凭据由 `.runtime/model-config-fernet.key` 加密，导致千问结构化调用在第 0 段返回 `key_decryption`。已停止占用 8000 的旧后端并按项目持久化密钥重启；当前 deepseek/qwen 两个启用配置均可解密，8000、健康检查和 5173 均 HTTP 200。后续测试不得用临时密钥复用业务后端进程。
+- MCP 真实联调：按“清除分析→深度分析”复现后，首次真实请求已确认网络和密钥均正常，前 3/5 段完成，第 4 段因模型返回缺少结构化数组而安全返回 `partial/model_error`；加入可控的模型结构错误分段拆分并重试后，再次实际重跑 5/5 段完成，生成 96 条最终测试点。最新结果 `mapping_gaps={}`，模块、功能点、测试点描述和测试类型齐全；前端正式展示“最终测试点（主要审核对象）”表格，联合点显示为“联合模块/联合场景”，没有“未关联模块/未关联功能点”。
+- 真实审核门禁：当前页面显示“分析结果待复核”是因为原文仍有 134 / 142 条证据被分析结果覆盖，需人工逐行勾选 96 条最终测试点及辅助证据项；这不是需求标题审核，也不是让用户填写 ID。确认按钮在全部勾选前保持禁用，审核通过后才允许进入用例生成。
+- 运行时容错：`execute_structured_segments` 保持原有输出截断拆分轨迹，并新增 `model_error/invalid_response` 的有限深度拆分（最多 3 层、受全局分段上限约束），父段失败原因与子段结果均保留在结构化轨迹中，避免用户反复清除和重跑。
+- 针对旧分析记录仍显示“未关联模块/未标注”的反馈，补充了醒目的“当前结果不能直接审核”阻断提示，并明确要求重新执行深度分析；结构缺失时不再把旧数据伪装成“最终测试点表”，只展示问题说明；完整结果的审核、序号、模块、功能点、描述、测试类型、原文依据列全部居中。旧记录未被脚本猜测或改写，避免伪造模块归属。
+- 最新交互修正：最终测试点表已置于审核区首位，按序号逐行展示；功能模块和功能点列居中，测试类型使用“正向/异常/边界/安全/联动/性能”等中文分类。原文覆盖和模型依据仅作为下方辅助检查，不再抢占主审核视线；缺失模块归属或测试类型的分析结果继续阻断确认。
+- 根因：用例生成页面只筛选 `latest_analysis.quality_status == complete`，导致实际已完成分析但处于 `needs_review` 的文档被误显示为“没有可用文档”；此前模型提示也没有强制 `模块 → 功能点 → 测试点` 的结构关系和测试类型，截图中出现了“未关联模块/函数”“未分类”的测试点。
+- 修复范围：需求文档新增项目管理员可执行的 `POST /api/requirement-documents/{id}/confirm-analysis/` 确认接口；确认接口必须接收并校验已核对的测试点、未覆盖证据和未引用分析项 ID，未完成清单不能确认；`partial/failed` 仍阻断。模型提示要求功能点带有效 `module_id`、测试点带有效 `function_id`（联动测试点带有效 `scenario_id`），质量检查和确认接口再次校验映射缺失并阻断。确定性五轮生成按测试点最小单元生成，保留模块/功能点/测试点/证据映射和测试点覆盖度。
+- 前端闭环：`RequirementAnalysisView` 新增人工审核清单，明确审核的不是需求标题或功能标题，而是最终结构化分析中的全部测试点；核心区域改为横跨整行、按 1、2、3… 编号的逐行审核表，展示模块、功能点、描述、中文测试类型和原文依据，打开页面先看到核心审核对象。原文覆盖检查和模型依据检查降为下方辅助区，并在标题中说明用途；检测到归属或测试类型缺失时按问题类型分组为独立对象卡片，直接展示名称、关系、描述，内部 ID 不作为用户内容展示，避免长文本重叠，确认按钮禁用。`CaseGenerationView` 不再自动确认 `needs_review`，必须先回到需求分析页完成审核；`partial/failed` 显示恢复提示。
+- 第一轮专项：需求分析/用例生成桥接及层级映射专项 31/31；结构化分段与自适应拆分专项 26/26；覆盖最终测试点逐项审核、证据/分析项清单校验、映射缺失阻断、确认后生成、未完成清单阻断、测试点最小生成单元和测试点覆盖度。
+- 第二轮回归：后端 `apps config` 全量 468/468；Django system check、`makemigrations --check --dry-run`、compileall、前端 Node 测试 13/13、前端生产构建、`git diff --check` 通过。全量测试使用本次命令级临时 `DJANGO_SECRET_KEY` 与合法 `MODEL_CONFIG_FERNET_KEY`，未写入项目文件。
+- 真实本地联调：8000 根路径、`/api/health/` 和 5173 均 HTTP 200；Playwright MCP 已完成管理员真实登录、清除分析（200，原文/解析证据保留）、深度分析失败诊断和修复后的真实重跑（200，5/5 分段、96 条测试点）。匿名接口仍返回 401，登录刷新后的项目/需求文档接口返回 200；本轮未修改账号密码、未删除需求原文或解析证据。确认→生成链路由 27 个 Django API/Service 专项测试覆盖。
+- 变更影响矩阵：`analysis_mapping_gaps/assess_quality` → 深度分析质量状态与审核提示；`execute_structured_segments/split_segment` → 需求模型结构化分段、失败恢复和合并轨迹；`RequirementAnalysisRecordService.confirm_analysis` → 需求文档确认 REST → 用例生成页待复核操作；`generate_cases` → 五轮确定性生成、模型兼容标注、覆盖报告、评审/筛选下游；`RequirementDocumentSerializer.latest_analysis` → 需求文档列表与用例生成选择器；前端 API/页面/CSS → 工作台入口。已验证正常、空数据、字段错误、401、403、服务失败、待复核、部分/失败分析、旧模型输出兼容、映射缺失阻断、结构错误自适应拆分、真实模型重跑和测试点映射。
+- 配置与交付：无新增迁移、第三方依赖或持久化环境变量；未提交、未推送、未部署。本节为历史缺陷修复记录，原记录中的下一任务 T060 已被当前已确认的 T155C 取代。
+
+## 2026-09-16 T059 测试执行 REST API 与前端闭环（已完成代码验收）
+
+- 实现范围：新增测试用例 CRUD、测试执行创建/查询、结果查询和 `POST /api/test-runs/{id}/execute/` 触发执行；新增 `/workspace/tests` 测试执行工作台并接入侧边栏入口。严格停在 T059，未实现 T060 评估打分。
+- REST 能力：`TestCase` 支持项目范围内的接口步骤、输入和预期结果读写；`TestRun` 支持立即/脚本/全量模式、项目环境和用例选择；`TestResult` 只返回状态码、耗时、响应摘要、断言和脱敏错误，不返回原始响应体或认证值。
+- 服务与权限：新增项目成员隔离、平台角色/项目角色双重权限；成员可读，具备创建用例/执行测试能力者可写；跨项目环境/用例混用返回字段错误，匿名返回 401，只读成员写入返回 403；执行状态、结果和安全摘要由 Service 层事务化持久化。
+- 前端入口：新增测试执行页面，覆盖项目切换、用例空状态/创建、立即/脚本/全量任务创建、结果展示、加载中、字段错误、401、403、服务失败和重试反馈；脚本模式提供受控相对路径配置。
+- 第一轮专项：`apps.tests.tests_t059` 4/4；覆盖空列表与认证、用例 JSON 字段错误、只读权限、创建→执行→结果、跨项目环境阻断和无环境安全失败。
+- 第二轮回归：后端 `apps` 全量 457/457，按历史口径包含 `config` 的全量 462/462；Django check、`makemigrations --check --dry-run`、compileall、前端 Node 测试 13/13、前端生产构建和 `git diff --check` 通过。PowerShell 的 `npm` 脚本策略首次拦截，改用等价 `npm.cmd` 后构建通过。
+- 真实本地联调：8000 根路径/健康接口 200，5173 200，匿名测试接口稳定 401；管理员真实登录后项目、用例、执行列表读取成功；临时环境→接口用例→执行任务→真实请求 `/api/health/` 返回 `completed/passed/200`，验收数据已清理。当前 CUA 无可用浏览器窗口，未虚构鼠标点击验收；页面路由和构建已验证。
+- 变更影响矩阵：`TestCase` → 用例 REST/选择器/APIExecutor；`TestRun` → 执行 REST/状态控制/APIExecutor；`ExecutionResult.details` → `TestResult` 安全落库与结果展示；项目成员/平台角色 → 列表、创建、执行和详情权限；前端 API 封装/路由/工作台 → 真实本地 REST 链路。已验证正常、空数据、字段错误、401、403、服务失败、跨项目边界、无环境失败和重试路径；未覆盖真实浏览器窗口点击与脚本模式真实外部脚本执行。
+- 配置与交付：无新增数据库迁移、第三方依赖或环境变量；仅复用 T056/T057 的 requests/pytest。未提交、未推送、未部署。下一任务为 T060，按契约停止等待确认。
+
+## 2026-09-16 T058 PytestGenerator（已完成）
+
+- 实现范围：新增 `apps.tests.generator.PytestGenerator`，将结构化接口用例生成确定性的 pytest+requests 模块；支持多用例、多步骤、数据集展开、参数化 ID、运行时环境地址和安全占位符。本任务未实现 T059 REST API 或前端入口。
+- 生成契约：生成 `test_*.py` 相对文件名、`pytest.mark.parametrize` 数据驱动行、请求方法/path/headers/params/json、默认 2xx/指定状态码断言和 JSON 字段存在断言；可接收字典用例或已持久化 `TestCase`。
+- 安全边界：输入用例、步骤、数据集和源码长度均有上限；只生成校验后的 Python 字面量，不执行输入文本；拒绝非法方法、路径、状态码、断言、非 JSON 值和带账号密码的 URL；password/token/Authorization/cookie 等值替换为运行时 `AITS_TEST_SECRET_*` 引用，不写入源码。
+- 执行衔接：新增 `write_to_workspace()`，通过 T056 工作目录边界写入；T056 pytest 环境同步注入 `AITS_TEST_BASE_URL`，生成代码未配置目标地址时安全跳过，不主动访问外部服务。
+- 第一轮专项：`apps.tests.tests_t058` 5/5；T056/T057/T058 联合回归 18/18；覆盖参数化源码解析、真实 pytest 收集、注入文本作为数据、敏感数据不落盘、空/超限/非法步骤/文件名/非 JSON 值边界。
+- 第二轮回归：Django 全量 461/461；Django check、`makemigrations --check --dry-run`、compileall、前端 Node 测试 13/13、前端生产构建和 `git diff --check` 通过；差异检查仅有既有 Windows CRLF/LF 提示，无 whitespace 错误。
+- 变更影响矩阵：`TestCase.steps/input_data` → 生成请求步骤和数据集；`BaseExecutor.write_workspace_file/run_pytest` → 生成文件落盘与 T057 完整执行模式；运行时环境变量 → 目标地址与敏感数据边界；`APIExecutor` → 后续可消费生成的 pytest 路径。已验证正常、空输入、数据驱动、非法结构、源码注入、敏感值、超限、无目标环境和目标地址边界。
+- 链路测试证据：结构化用例 → `PytestGenerator.generate()` → 安全校验/敏感值替换 → 参数化 pytest 源码 → workspace 写入 → pytest 收集/执行；专项 5/5、联合 18/18、全量 461/461。当前没有 REST/前端入口，操作入口留给 T059。
+- 配置与交付：无新增迁移、无新增第三方依赖或密钥；T057 已引入的 requests/pytest 依赖继续复用；本地服务 5173、8000、health 均 HTTP 200；未提交、未推送、未部署。下一任务为 T059，按任务边界停止等待确认。
+
+## 2026-09-16 T057 APIExecutor（已完成）
+
+- 实现范围：新增 `apps.tests.executor.APIExecutor`，支持即时、脚本、完整三种接口测试模式；复用 T056 环境校验、隔离工作目录、统一结果和超时边界。本任务未实现 T058 `PytestGenerator`、T059 REST API 或前端入口。
+- 即时模式：要求且只执行一个结构化接口用例，支持 method/path/url/headers/params/json、默认 2xx 断言和可选状态码/JSON 字段断言。
+- 完整模式：按 `case_id` 稳定顺序执行全部关联用例并聚合通过/失败/跳过/错误计数；配置 `pytest_path` 时复用 T056 pytest 执行链路，否则执行结构化接口步骤。
+- 脚本模式：仅允许执行隔离工作目录内的相对 Python 脚本，禁止 shell；脚本必须输出 JSON 对象，非零退出、超时和非法 JSON 返回可识别错误状态。
+- 数据流与安全：支持 `input_data.data_flow` 中配置的响应字段提取和后续请求占位符注入，值只保留在本次内存上下文；目标 URL 限定为当前环境同源地址，拒绝凭据 URL、跨域地址、非法方法和目录越界；认证配置只用于请求，不写入结果，结果只保留状态码、响应摘要、字段名和断言状态。
+- 依赖：`backend/requirements.txt` 新增固定依赖 `requests==2.34.2`；本地 `.venv` 已具备 requests 和 pytest；无新增密钥或环境变量。
+- 第一轮专项：`apps.tests.tests_t057` 6/6；T056/T057 联合回归 13/13；覆盖三种模式、环境认证、完整聚合、内存数据流、脚本 JSON、跨域阻断、请求超时和敏感数据不返回。
+- 第二轮回归：Django 全量 456/456；Django check、`makemigrations --check --dry-run`、compileall、前端 Node 测试 13/13、前端生产构建和 `git diff --check` 通过；差异检查仅有既有 Windows CRLF/LF 提示，无 whitespace 错误。
+- 变更影响矩阵：`TestRun.mode/test_cases/execution_config` → 三种执行分支和结果聚合；`TestCase.steps/input_data` → 结构化请求、断言和数据流；`Environment.base_url/auth_config/status/health_status` → 同源目标、认证注入和执行前门禁；`BaseExecutor.ExecutionResult` → 新增安全 `details` 供 T059 结果写入。已验证正常、空用例、字段错误、401/403 等请求错误降级、超时、跨域、脚本失败和敏感输出边界。
+- 链路测试证据：`TestRun` → `APIExecutor.execute()` → 环境门禁 → 即时/脚本/完整分支 → requests 或 pytest → 断言/数据流 → `ExecutionResult.details`；所有 HTTP 测试均使用受控 Session Double，未访问外部供应商或真实目标接口。当前没有 REST/前端入口，操作入口留给 T059。
+- 服务与交付：本地 `5173`、`8000`、`/api/health/` 均 HTTP 200；未提交、未推送、未部署。下一任务为 T058，按任务边界停止等待确认。
+
+## 2026-09-16 T056 BaseExecutor 基类（已完成）
+
+- 实现范围：新增 `apps.tests.executor.BaseExecutor` 抽象基类及 `ExecutionResult`、`ExecutorConfigurationError` 契约；覆盖环境感知、项目/执行级工作目录、pytest 无 shell 启动、超时处理和统一结果解析。本任务未实现 T057 `APIExecutor`、REST API 或前端入口。
+- 环境感知：执行前校验环境已选择、属于当前项目、运营状态可用且健康状态不为异常；输出仅包含地址、环境状态及认证/变量“是否配置”标记，不暴露配置值。
+- 工作目录：按 `project_id/run_id` 隔离目录，所有文件写入和 pytest 路径拒绝绝对路径、空字节和目录穿越；清理操作仅允许删除本实例创建且带工作区标记的目录。
+- pytest 执行：使用当前虚拟环境的 `python -m pytest`、参数数组和超时边界，不启用 shell；解析 passed/failed/skipped/errors、退出码、耗时和安全脱敏的 stdout/stderr；进程启动失败和超时返回可恢复的统一 error 结果。
+- 依赖：`backend/requirements.txt` 新增固定依赖 `pytest==9.0.3`，并已安装到本地 `.venv`；无新增密钥或其它第三方运行时配置。
+- 第一轮专项：`apps.tests.tests_t056` 7/7；覆盖抽象继承、可用/异常环境、环境元数据脱敏、工作目录隔离与越界、pytest 真实通过解析、超时降级和缺失文件错误。
+- 第二轮回归：Django 全量 450/450；Django check、`makemigrations --check --dry-run`、compileall、前端 Node 测试 13/13、前端生产构建和 `git diff --check` 通过；差异检查仅有既有 Windows CRLF/LF 提示，无 whitespace 错误。
+- 变更影响矩阵：`TestRun.environment` → 环境就绪校验和安全上下文；`TestRun.project_id/id` → 工作目录隔离；pytest 子进程 → `ExecutionResult` 状态及 T057/T059 后续结果写入；`requirements.txt` → 本地/部署环境可执行依赖。已验证正常、空/未选环境、不可用环境、健康异常、路径错误、pytest 超时、进程错误和敏感输出脱敏；后续具体执行器尚未接入。
+- 链路测试证据：`TestRun` → `BaseExecutor.ensure_environment_ready()` → `prepare_workspace()`/`write_workspace_file()` → `run_pytest()` → `parse_pytest_output()` → 统一结果；专项 7/7，全量 450/450。当前没有 REST/前端操作入口，避免虚构浏览器闭环；操作入口留给 T059。
+- 服务与交付：本地 `5173`、`8000`、`/api/health/` 均 HTTP 200；未提交、未推送、未部署。下一任务为 T057，按任务边界停止等待确认。
+
+## 2026-09-16 T055 接口测试执行域模型（已完成）
+
+- 实现范围：新增 `apps.tests` Django 应用，建立 `TestCase`、`TestRun`、`TestResult`、`Evaluation` 四类模型及 Admin 注册；接入项目、环境、用户关系，新增 `tests.0001_initial` 和 `tests.0002_alter_evaluation_dimensions_and_more` 迁移并已应用到本地数据库。
+- 用例契约：`TestCase` 覆盖架构要求的编号、标题、前置条件、步骤、输入、预期结果、优先级、类型、需求映射和创建时间；支持 `function/boundary/exception/security/api/ai/ui/app/perf/linkage` 类型；自动化用例必须填写 `automation_difficulty` 和 `automation_tech`。
+- 执行契约：`TestRun` 支持立即、脚本、全量三种模式及待执行/执行中/完成/失败/取消状态；可关联项目环境和用例。`TestResult` 保存状态码、耗时、响应摘要、断言和安全错误信息，并限制同一执行内同一用例只能有一条结果；`Evaluation` 支持规则、模型和人工评价及 0-100 分数、维度和建议。
+- 安全与边界：执行环境、执行用例、结果用例和评价结果均执行项目/执行级隔离；响应只保留摘要字段，不新增原始敏感响应存储；JSON 字段通过显式 `clean()` 和 validators 校验对象/数组形状。
+- 第一轮专项：`apps.tests.tests_t055` 4/4；覆盖四类模型持久化、自动化标注必填、默认 JSON 形状、环境项目隔离、用例跨项目阻断、结果/评价跨执行阻断；Django check、迁移一致性检查通过。
+- 第二轮回归：Django 全量 443/443；Django system check 通过；`makemigrations --check --dry-run` 显示无变更；迁移已在本地数据库应用。
+- 变更影响矩阵：`Project` → `TestCase/TestRun` 项目隔离与级联；`Environment` → `TestRun.environment` 同项目校验；用户 → `TestRun.created_by` 可空审计关系；`TestCase` → `TestRun.test_cases`、`TestResult`；`TestRun` → `TestResult/Evaluation` 结果和评价链路；Admin → 四类记录的管理入口。已验证正常、空默认值、字段错误、跨项目边界和跨执行边界；T056 执行器、T057 APIExecutor 尚未调用这些模型。
+- 链路测试证据：模型实例 → `full_clean()` 形状/隔离校验 → 本地迁移建表 → 关系写入与唯一约束；专项 4/4，Django 全量 443/443。当前没有 REST API 或前端入口，因此不虚构浏览器闭环；对应操作入口留给 T059，并以 T055 模型为依赖。
+- 配置与交付：新增 Django app 和数据库迁移，无第三方依赖、无新增环境变量、无密钥变更；未提交、未推送、未部署。下一任务为 T056，按任务边界停止等待确认。
+
+## 2026-09-16 T054 联调数据流转与断言设计（已完成）
+
+- 实现范围：新增 `BusinessLinkageDataFlow` Service，消费 T052 业务链路和 T053 联调用例，设计响应字段提取、后续请求注入、环节断言和最终链路断言；本任务只生成设计元数据，不执行目标接口。
+- 数据流契约：每条依赖必须提供明确 `from/to` 字段映射；输出 `data_flow` 包含来源步骤/响应字段、目标步骤/请求位置、传递类型、提取注入动作和必需标记；Token/Authorization 自动归类为请求头，ID/状态和值字段保留可审阅分类，不保存真实字段值。
+- 断言契约：每个步骤生成 2xx 状态断言，数据源生成非空字段断言，每条链路生成按顺序完成且所有数据流已注入的最终断言；执行状态明确为 `designed_not_executed`，执行入口留给 T057 APIExecutor。
+- 安全与边界：拒绝缺少映射、反向依赖、未知步骤、重复依赖、缺失对应 T053 用例和超限映射；不猜测字段、不复制示例 Token 或敏感值。
+- 第一轮专项：`apps.business_linkage.tests_t052 apps.business_linkage.tests_t053 apps.business_linkage.tests_t054` 10/10；Django check、`makemigrations --check --dry-run`、compileall 和 `git diff --check` 通过。
+- 第二轮回归：Django `apps core` 434/434；前端 Node 测试 13/13；前端生产构建通过。未执行真实供应商调用或目标接口调用。
+- 变更影响矩阵：T052 `linkages` → T053 `cases` → T054 `data_flow/step_assertions/final_assertions`，已完成联合链路验证；现有用例选择器和评审回归通过。未改变 REST 路由、前端入口、数据库迁移、权限、模型配置或外部服务。
+- 当前未完成：T055 测试执行模型，T056 基础执行器，T057 APIExecutor，以及后续 REST/前端业务闭环。T054 本身没有可操作 REST 入口，浏览器验收转入后续 REST/UI 任务。
+- 交付状态：未提交、未推送、未部署；下一任务为 T055，按任务边界停止等待确认。
+
+## 2026-09-16 T053 业务联调用例生成器（已完成）
+
+- 实现范围：新增 `BusinessLinkageCaseGenerator` Service，消费 T052 识别出的业务链路，按稳定顺序为每条链路生成一个多接口串联主流程用例；输出兼容现有用例 JSON 结构，包含链路 ID、依赖 ID、步骤顺序、P0 优先级和可审阅标题。
+- 数据边界：校验链路、步骤、接口 ID、步骤顺序和依赖引用；限制链路及步骤数量；不执行真实接口、不写入测试目标、不持久化用例记录。
+- T054 边界：用例明确标记 `automation_pending=T054_data_flow_and_assertions`，覆盖报告中的数据流转和断言状态为 `pending_t054`；本任务不提前设计 Token/ID/状态映射、环节断言或最终断言。
+- 第一轮专项：`apps.business_linkage.tests_t052 apps.business_linkage.tests_t053` 7/7；Django check、`makemigrations --check --dry-run`、compileall 和 `git diff --check` 通过。
+- 第二轮回归：Django `apps core` 431/431；前端 Node 测试 13/13；前端生产构建通过。未执行真实供应商调用或目标接口调用。
+- 变更影响矩阵：`generate_linkage_cases` → T052 `linkages` 输出和现有用例选择器可识别的 `type/linkage_id/steps` 字段；已验证正常排序、空输入、重复链路、非法依赖、T054 待办标记和数量边界。未改变 REST 路由、前端入口、数据库迁移、权限、模型配置或外部服务。
+- 链路测试证据：T052 识别输出 → T053 链路校验 → 稳定多接口步骤用例，联合专项 7/7；现有 `apps.case_generation` 全量回归包含既有用例生成、选择和评审兼容性。
+- 当前未完成：T055-T057 执行引擎、后续 REST/API 与前端闭环，以及依赖 T054 的 T117-T125 前端闭环。T053 本身没有可操作 REST 入口，前端真实验收转入对应 REST/UI 任务。
+- 交付状态：未提交、未推送、未部署；下一任务为 T055，按任务边界停止等待确认。
+
+## 2026-09-16 T052 业务链路识别器（已完成）
+
+- 实现范围：新增 `BusinessLinkageAnalyzer` Service，接收受限的接口定义数组，通过 API 测试场景 Prompt 和统一模型路由执行结构化识别，输出可写入 T051 `BusinessLinkage` 的业务链路列表；本任务不持久化、不执行真实接口、不实现 T053/T054、REST 或前端。
+- 输出契约：每条链路必须有唯一 id、名称、至少两个接口步骤、一条以上依赖关系、步骤顺序、数据映射和非空 evidence_ids；所有接口引用必须来自输入文档，未覆盖接口写入 `coverage_report.uncovered_interface_ids`。
+- 安全与可靠性：输入数量/长度有上限；接口文档发送模型前只保留识别所需字段并递归脱敏 password、token、Authorization、API Key、cookie 等敏感键；结构化调用采用受控分段、模型路由和安全错误码，拒绝幻觉接口、重复关系、非法顺序和不完整结果。
+- 第一轮专项：`apps.business_linkage.tests_t052` 4/4；Django check、`makemigrations --check --dry-run`、compileall 和 `git diff --check` 通过。专项中修复了结构化验证错误码被外层错误覆盖的问题，现能保留 `invalid_response` 与模型调用失败边界。
+- 第二轮回归：Django `apps core` 428/428；前端 Node 测试 13/13；前端生产构建通过。未执行真实供应商调用，未产生外部费用或发送项目数据。
+- 变更影响矩阵：`BusinessLinkageAnalyzer` → `ModelManager.execute_routed`、`PromptManager.resolve`、结构化分段运行时和 T051 数据形状；已验证正常链路、空输入、敏感字段脱敏、幻觉接口拒绝、模型失败脱敏和旧模型路由兼容。未改变既有 REST 路由、前端入口、数据库迁移、权限和外部配置。
+- 当前未完成：T054 数据流转与断言，以及依赖 T054 的 T117-T125 前端闭环。T052 本身没有可操作 REST 入口，因此按任务边界不新增前端页面；前端真实浏览器验收转入对应 REST/UI 任务。
+- 交付状态：未提交、未推送、未部署；下一任务为 T054，按依赖关系停止等待确认。
+
+## 2026-09-16 T051 业务联调后端模型（已完成）
+
+- 实现范围：新增 `backend/apps/business_linkage` 应用和 `BusinessLinkage` 模型，包含 UUID 主键、项目级级联关系、链路名称、步骤、依赖关系、关联用例和创建时间；注册 Django Admin。
+- 数据边界：`steps`/`dependencies` 必须为 JSON 数组，`test_case_ids` 必须为不重复的非空字符串数组；模型 `clean()` 显式复用校验器，避免 JSONField validators 未自动触发造成脏数据。未实现链路识别、联调用例生成、数据流转、断言或 REST API。
+- 迁移：新增并应用 `business_linkage.0001_initial`；无新增第三方依赖或环境变量。
+- 第一轮专项：`apps.business_linkage.tests_t051` 3/3；Django system check 和 `makemigrations --check --dry-run` 通过。修复并复测了索引名超过 30 字符和 JSONField 形状校验未触发两个问题。
+- 第二轮回归：Django `apps core` 424/424；前端 Node 测试 13/13；前端生产构建、Django check、迁移一致性、compileall 和 `git diff --check` 通过。
+- 变更影响矩阵：`BusinessLinkage` → `Project.business_linkages` 级联关系、Admin 和迁移；未改变既有 REST 路由、前端入口、模型调用、权限或外部服务。T053/T054 继续保持未开始。
+- 当前未完成：T053 联调用例生成、T054 数据流转与断言，以及后续 T117-T125 前端闭环。未提交、未推送、未部署。
+- 下一步：T053，按 T052 输出链路列表实现联调用例生成；按任务边界停止等待确认。
+
+## 2026-09-16 T160 全链路兼容性与真实验收（已完成）
+
+- 本轮范围：仅修复需求分析→用例生成的完整性门禁；`quality_status` 非 `complete` 的分析结果不再进入用例生成下拉列表，后端生成服务同步拒绝待复核、部分完成和失败结果。
+- 前端闭环：待复核文档不再显示为可选项；“生成用例”按钮保持禁用，并显示先完成需求复核的提示；刷新或分析状态变化后会清理失效的文档选择。
+- 新增回归：补充 `needs_review` 分析结果的 REST 拒绝测试，覆盖前后端同一门禁。
+- 第一轮专项：case-generation 19/19；前端 Node 测试 13/13；前端生产构建通过。
+- 第二轮全量：Django `apps core` 421/421；Django system check、迁移一致性检查和 compileall 均通过；`git diff --check` 无实际错误，仅有 CRLF 转换提示。
+- 真实浏览器：管理员登录成功；需求分析页显示 `needs_review`（证据覆盖 123/142、未引用 6）；用例生成页不再列出该文档，生成按钮为 disabled，相关接口 200，当前页 Console 错误 0。
+- 服务状态：`http://127.0.0.1:5173/`、`http://127.0.0.1:8000/` 和 `/api/health/` 当前均 HTTP 200。
+- 变更影响矩阵：`RequirementAnalysis.quality_status` → `generate_document_cases`；`CaseGenerationView.vue` → 文档筛选、选择恢复、按钮门禁和复核提示；`tests_t095.py` → needs_review REST 回归。未改变模型配置、权限、迁移或外部供应商调用。
+- 台账修正：根据既有完成记录、专项测试和全量回归证据，将 `TASKS_V5.0.md` 中 T155B、T156 的历史蓝色状态更正为已完成；T145、T146、T160 均已完成。
+- 当前未完成：T051-T054 业务联调后端链路尚未完成，因此 T117 前端闭环暂不能开始；T118-T125 也仍是尚未开发的业务前端闭环。本轮不将这些模块伪标记为完成。未提交、未推送、未部署。
+- 全历史模块审查结论：复核既有专项测试、真实代理联调和工作台验收记录后，已将 TASKS_V5.0 中 T113-T116、T126 的历史蓝色状态统一为已完成；T117-T125 当前没有对应的后端业务应用/REST 路由/前端工作台页面，不能按历史摘要或内置 Skill 计划结果判定为前端闭环完成。
+- 阶段27依赖审查结论：T151-T154 均有既有完成记录、专项测试和实际调用链证据，已将任务表过期状态统一为完成；T158 仅实现 Embedding/RAG 能力边界门禁，完整 RAG 阶段 T133-T144 尚未开发，因此已移除其不应存在的 T133-T144 前置依赖，避免把规划阶段误当成当前完成前置。
+- T146 完成证据：目标服务器 backend 容器内使用已配置的 DeepSeek `deepseek-v4-flash` 执行一次最小 `inference` 探针（只发送 `Reply with {"ok":true}`，最大输出 16 tokens，无项目数据、无自动重试），返回 `ok=True`、`inference_verified=True`、`account_access_state=verified`、`model_state=callable`、`model_call_state=callable`，延迟约 8.6 秒；未输出密钥或原始响应。
+- T146 第一轮专项：后端 `apps.configs.tests_t146_network` 8/8；前端模型连接错误分层测试 4/4；前端 Vite 生产构建通过。第二轮全量：Django `apps core` 421/421、前端 Node 测试 13/13、Django check、迁移一致性、compileall 和 `git diff --check` 通过；目标 backend Django check 无问题，远程 `/api/health/` HTTP 200。沿用此前模型工作台真实浏览器/代理验收证据，未新增业务数据。
+- T160 最终验收：依赖 T145、T146、T155-T159、T161 全部满足；真实本地 API、健康接口、前端构建、全量回归和一次明确授权的目标 DeepSeek 最小短调用均通过。当前 CUA 无可用浏览器窗口，本轮未进行新的浏览器写操作，沿用此前管理员真实浏览器验收与 Console 0 errors 证据；未部署、未推送、未创建 Git 提交。
+- T117 前置审查：任务 T117 依赖 T054，但任务表和仓库均显示 T051-T054 尚未完成；当前不存在 `backend/apps/business_linkage`、业务联调 REST 路由或前端 API/页面。已将下一任务纠正为 T051，必须按 T051→T052→T053→T054→T117 的纵向顺序推进。
+- 工作区隐患清理：浏览器验收产生的未跟踪 `.playwright-mcp/` 日志与页面快照已移至系统临时目录 `aits-playwright-artifacts-20260916`（可恢复）；扫描未发现项目跟踪文件或验收产物中包含本次登录凭据、Authorization、Token 或常见供应商密钥模式。
+- T145 预检结论：仓库没有可直接执行的目标服务器预检脚本；本地开发使用 `CELERY_TASK_ALWAYS_EAGER=True`，未运行独立 Worker/Beat；远程 Compose 仅定义 backend、celery_worker、celery_beat 和 `env_file`，不能替代目标环境当前运行身份、DNS/TCP/TLS/代理证据。
+- T145 目标环境证据：通过 SSH 只读核验 `/opt/aits-v5`；backend、celery_worker、celery_beat 均运行约 43 小时，容器用户均为 `appuser`（uid 10001）；backend 与 worker 对 `api.deepseek.com`、`dashscope.aliyuncs.com` 均完成 DNS、TCP 443、TLS 1.3 和证书 Verification OK；容器未配置 HTTP/HTTPS/ALL/NO_PROXY 变量，判定为直连；backend/前端健康接口均 HTTP 200，Celery worker `inspect ping` 返回 pong，Django check 和迁移一致性通过；T145 预检未执行模型调用，未读取或输出密钥。依据此证据将 T145 标记完成；T146 单次真实短调用证据见上方。
+- 下一步：按契约停止并等待确认；下一任务为 T051 业务联调后端模型，不跨越 T054 开始 T117。
+
+## 2026-09-14 T160 本地需求分析链路整改（代码完成，真实模型结果待复核）
+
+- 整改范围：模型结构化调用默认超时调整为 120 秒；供应商响应超时新增 `provider_timeout`，不再误报为 `tcp_blocked`；保留 `tcp_blocked`、DNS、TLS、代理和鉴权等独立错误边界。
+- 文件链路：需求文档上传、字节解析、磁盘解析、在线文档和截图校验统一读取 `REQUIREMENT_DOCUMENT_MAX_BYTES`；默认仍为 10MB；“文件不存在”和“超过限制”返回不同中文提示和错误码；前端上传前先提示超限。
+- 部署配置：远程 Nginx 上传边界与后端统一为 10MB，模型分析反向代理超时调整为 600 秒；远程 backend/celery_worker 共享 `requirement_documents_data` 持久化卷，避免数据库路径存在但容器文件丢失。
+- 第一轮专项：需求解析/上传/文件边界/网络错误分类 29/29；前端模型错误分类 4/4。
+- 第二轮回归：后端全量 425/425；Django check、`makemigrations --check --dry-run`、compileall、前端构建通过；本地 `users.0004_platformbootstrapstate` 已应用，当前无待应用迁移。
+- 真实本地 API：管理员登录、项目列表、需求文档列表、健康接口均成功；前后端 `5173/8000` 均 HTTP 200；未发送新的供应商模型请求。
+- 证据覆盖整改：结构化需求分析提示词已明确要求每个模块、功能点、联合场景和测试点提供非空 `evidence_ids`，并要求当前分段的每条证据至少被引用一次；需求页面将“模型调用成功”和“结果完整通过”拆分为“调用已验证，结果待复核”。
+- 真实本地分析证据：用户浏览器已实际发起 Qwen 深度分析，5/5 分段完成；当前结果包含 142 条证据中的 119 条覆盖、7 个无引用分析项，按契约正确标记 `needs_review`，不是 TCP 阻断或超时。
+- 本轮专项：需求模型适配器与 T155B 14/14；前端 Node 测试 13/13；后端全量 425/425；Django check、makemigrations 检查、compileall、前端构建通过；本地 `/` 与 `/api/health/` 均 HTTP 200。
+- 影响矩阵：`requirement_analysis.limits` → 上传 Serializer、Parser、在线适配器、分析器、截图 REST；`configs.services` → OpenAI-compatible 业务调用、连接测试和 Agent 重试边界；Vue 需求页面/模型诊断页面 → 超限与超时反馈；Compose/Nginx → 远程文件持久化和长请求边界。
+- 当前未完成：本机没有 Docker CLI，无法执行 Compose 语法命令；Computer Use 没有可用浏览器窗口，页面级复验由用户浏览器完成；当前这次真实结果仍有证据覆盖缺口，需用新提示词重新执行并达到完整性门禁后才能标记通过；未推送 Git、未部署远程。T160 仍不能标记为最终验收通过。
+- 会话交接：本轮已完成本地代码整改和两轮测试，未修改或删除用户测试数据。下次从 T160 继续：刷新本地需求分析页面，使用新提示词重新执行一次深度分析；若仍为 `needs_review`，继续实现“未覆盖证据定向补齐/可追溯复核”方案，不得放宽完整性门禁。确认本地浏览器结果后，再由用户单独下令决定是否提交、推送 Git 和部署服务器。
+
+## 2026-09-14 T150 Skill 业务页面 REST 与前端闭环（本地验收完成，远程待部署）
+
+- 本轮确认：T150 的实现已存在于本地基线，本次完成决策者页面验收，不重复修改业务代码。需求分析页和用例生成页均从工作台可进入，使用现有 `skill_execution` 响应显示 Skill、版本和状态；第三方 Skill 仍不允许直接执行。
+- 真实浏览器链路：清理旧会话后使用 `platform_admin` 登录；通过项目页面创建临时项目（HTTP 201），需求页面创建临时需求文档（HTTP 201），模型选项（HTTP 200），点击“解析”真实调用（HTTP 200）并显示“本次自动调用：需求分析 · v1.0.0 · 已完成”；用例生成页面加载项目、需求、生成和评审模型选项均 HTTP 200，并在无已完成分析时正确显示空数据和禁用生成按钮。
+- 既有核心 API 证据：此前 T150 本地闭环已验证需求解析 200、深度分析 200、用例生成 201、用例评审 200，四个响应均返回 `skill_execution.status=completed`；本轮未新增供应商调用，避免超出已有模型调用授权。
+- 权限与反馈：现有专项和历史回归覆盖正常、空数据、字段错误、401、403、服务失败、旧数据读取和 Skill 状态；本轮有效会话刷新后相关页面 Console 0 errors，关键 API 返回 200。
+- 测试数据清理：临时项目及其需求文档通过页面确认删除，删除 API HTTP 204；刷新后项目页面、需求页面均找不到临时项目/文档，未保留本轮验收数据。
+- 影响矩阵：`RequirementDocumentViewSet` → 需求分析页面/Skill 状态；`CaseGenerationViewSet` → 用例生成页面/生成与评审状态；`SkillExecutionService` → 两条 REST 链路及内置 Skill 注册；前端 API/页面 → 工作台入口、空数据和错误反馈。未改变模型配置、权限边界、第三方源码执行策略或远程环境。
+- 交付状态：T150 代码、测试和本地浏览器闭环完成；无新增依赖或迁移；远程服务器尚未更新，本轮未提交、未推送、未部署。后续只有收到明确指令才执行 Git/服务器动作。
+
+## 2026-09-14 T148 用户访问地址与部署入口展示（本地完成，远程待部署）
+
+- 实现：生产配置现在必须显式设置 `PUBLIC_APP_URL`，可选独立 `PUBLIC_API_URL`；开发环境默认使用 `http://127.0.0.1:5173`。新增管理员专用部署入口 REST 和“用户访问入口”工作台，展示规范地址、访问范围、协议/端口、TLS 状态、健康检查和最近检查时间，不枚举或展示数据库、Redis、Docker、SSH、网卡或猜测 IP。
+- 服务与安全：`DeploymentAccessService` 只校验显式绝对 HTTP/HTTPS 地址，拒绝凭据、查询串、片段和非法端口；健康检查不携带登录凭据、不跟随重定向，错误只返回可行动的安全提示。`PUBLIC_APP_URL` 同时用于邀请激活和密码重置链接，旧 `activation_path`/`reset_path` 保留兼容。
+- 影响矩阵：配置项 → Django settings/生产启动门禁；`DeploymentAccessService` → 管理员访问入口 REST、用户邀请/重置链接；Serializer/API → admin 权限边界和前端页面；`DeploymentAccessView` → `DeploymentAccessView.vue`、工作台导航和用户管理链接展示。已检索并验证直接调用方、旧路径兼容、权限中间件和本地页面入口。
+- 第一轮专项：T148 入口服务、URL 校验、健康探测、重定向阻断、无凭据、未配置/非法地址、401/403、服务不可达和邀请/重置链接兼容专项 22/22。
+- 第二轮回归：后端全量 420/420；Django check 通过；`makemigrations --check --dry-run` 无变更；Python compileall 通过；前端 Vite 生产构建通过；`git diff --check` 无 whitespace 错误，仅有 Windows CRLF/LF 提示。
+- 真实本地联调：5173、8000 及健康接口可用；管理员登录后访问 `/workspace/access`，页面显示 `http://127.0.0.1:5173`，点击“检查入口”返回健康；GET/POST 入口 API 均 200，最终刷新会话 Console 0 errors。页面为中文，无新增乱码；配置不完整、错误端口、匿名和 viewer 权限分支由专项测试覆盖。
+- 环境与交付：无数据库迁移、第三方依赖或密钥变更；仅新增 `PUBLIC_APP_URL`/`PUBLIC_API_URL` 配置说明。远程服务器尚未更新 T148，后续部署必须在目标 `.env.remote` 设置真实用户入口并重建前端/后端后再做服务器浏览器验收；本轮未推送 Git、未改远程数据。
+- 下一步：按门禁停止等待确认；收到明确指令后再提交/推送并部署 T148，未部署前不宣称目标验收通过。代码开发下一任务为 T150。
 
 ## 2026-09-14 T147 首个管理员初始化与首次安装闭环（本地与目标部署验收）
 

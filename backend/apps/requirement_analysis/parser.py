@@ -12,13 +12,20 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
+from apps.requirement_analysis.limits import (
+    DEFAULT_REQUIREMENT_DOCUMENT_MAX_BYTES,
+    requirement_document_limit_label,
+    requirement_document_max_bytes,
+)
 from docx import Document as WordDocument
 from pypdf import PdfReader
 
 from apps.requirement_analysis.adapters import DocumentContent, SwaggerAdapter, adapter_for
 
 
-MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
+# Kept as a compatibility export for existing callers; runtime checks use the
+# configured limit so local and deployed upload/parse boundaries cannot drift.
+MAX_DOCUMENT_BYTES = DEFAULT_REQUIREMENT_DOCUMENT_MAX_BYTES
 SUPPORTED_EXTENSIONS = frozenset({".txt", ".md", ".markdown", ".pdf", ".docx", ".xlsx", ".json", ".png", ".jpg", ".jpeg", ".webp"})
 
 
@@ -48,8 +55,8 @@ def _normalize(text: str) -> str:
 def _bounded(content: bytes) -> bytes:
     if not content:
         raise DocumentParseError("文档内容不能为空。")
-    if len(content) > MAX_DOCUMENT_BYTES:
-        raise DocumentParseError("文档超过10MB限制。")
+    if len(content) > requirement_document_max_bytes():
+        raise DocumentParseError(f"文档超过{requirement_document_limit_label()}限制。")
     return content
 
 
@@ -214,8 +221,10 @@ def parse_file(path: str | Path) -> ParsedDocument:
     """Read and parse a local file after enforcing the size boundary."""
     file_path = Path(path)
     try:
-        if not file_path.is_file() or file_path.stat().st_size > MAX_DOCUMENT_BYTES:
-            raise DocumentParseError("文档不存在或超过10MB限制。")
+        if not file_path.is_file():
+            raise DocumentParseError("文档文件不存在，请重新上传。")
+        if file_path.stat().st_size > requirement_document_max_bytes():
+            raise DocumentParseError(f"文档超过{requirement_document_limit_label()}限制。")
         return parse_document_bytes(file_path.read_bytes(), file_path.name)
     except DocumentParseError:
         raise

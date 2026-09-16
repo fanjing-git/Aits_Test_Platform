@@ -5,6 +5,8 @@ from typing import Protocol
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from apps.requirement_analysis.limits import requirement_document_limit_label, requirement_document_max_bytes
+
 
 @dataclass(frozen=True)
 class DocumentContent:
@@ -34,10 +36,11 @@ class WebAdapter:
         if not self.can_handle(url): raise ValueError("该适配器不支持此链接。")
         request = Request(url, headers={"User-Agent": "AITS-Document-Adapter/1.0", "Accept": "text/plain,text/html,application/json"})
         with urlopen(request, timeout=10) as response:
+            max_bytes = requirement_document_max_bytes()
             content_length = int(response.headers.get("Content-Length", "0") or 0)
-            if content_length > 10 * 1024 * 1024: raise ValueError("在线文档超过10MB限制。")
-            body = response.read(10 * 1024 * 1024 + 1)
-        if len(body) > 10 * 1024 * 1024: raise ValueError("在线文档超过10MB限制。")
+            if content_length > max_bytes: raise ValueError(f"在线文档超过{requirement_document_limit_label()}限制。")
+            body = response.read(max_bytes + 1)
+        if len(body) > max_bytes: raise ValueError(f"在线文档超过{requirement_document_limit_label()}限制。")
         text = body.decode("utf-8-sig", errors="strict").replace("\r\n", "\n").replace("\r", "\n")
         return DocumentContent(urlparse(url).path.rsplit("/", 1)[-1] or "在线文档", text, self.source_type, url)
 

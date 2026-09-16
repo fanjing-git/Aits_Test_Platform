@@ -13,4 +13,5 @@ export const analyzeRequirementDocument = (id, payload = {}) => request.post(`/a
 export const listRequirementModelOptions = (id) => request.get(`/api/requirement-documents/${id}/model-options/`)
 export const identifyRequirementLinkages = (id) => request.post(`/api/requirement-documents/${id}/linkages/`)
 export const clearRequirementAnalysis = (id) => request.post(`/api/requirement-documents/${id}/clear-analysis/`)
+export const confirmRequirementAnalysis = (id, payload = {}) => request.post(`/api/requirement-documents/${id}/confirm-analysis/`, payload)
 export const analyzeRequirementScreenshot = (id, payload = {}) => request.post(`/api/requirement-documents/${id}/screenshot-analysis/`, payload, { timeout: STRUCTURED_ANALYSIS_TIMEOUT })

@@ -31,13 +31,14 @@ async function logout() {
         <RouterLink to="/workspace/knowledge" :class="{ 'is-active': active === 'knowledge' }"><i>▤</i><span>知识库</span><small>LIVE</small></RouterLink>
         <RouterLink to="/workspace/requirements" :class="{ 'is-active': active === 'requirements' }"><i>⌁</i><span>需求分析</span><small>LIVE</small></RouterLink>
         <RouterLink to="/workspace/case-generation" :class="{ 'is-active': active === 'case-generation' }"><i>▣</i><span>用例生成</span><small>LIVE</small></RouterLink>
+        <RouterLink to="/workspace/tests" :class="{ 'is-active': active === 'tests' }"><i>⌘</i><span>测试执行</span><small>LIVE</small></RouterLink>
         <RouterLink to="/workspace/skills" :class="{ 'is-active': active === 'skills' }"><i>✧</i><span>Skills</span><small>LIVE</small></RouterLink>
         <a><i>✦</i><span>智能体</span><small>待开发</small></a>
-        <a><i>⌘</i><span>测试任务</span><small>待开发</small></a>
         <a><i>▱</i><span>质量报告</span><small>待开发</small></a>
         <RouterLink v-if="isAdmin" to="/workspace/models" :class="{ 'is-active': active === 'models' }"><i>⚙</i><span>模型配置</span><small>ADMIN</small></RouterLink>
         <RouterLink v-if="isAdmin" to="/workspace/prompts" :class="{ 'is-active': active === 'prompts' }"><i>⌁</i><span>提示词配置</span><small>ADMIN</small></RouterLink>
         <RouterLink v-if="isAdmin" to="/workspace/users" :class="{ 'is-active': active === 'users' }"><i>♙</i><span>用户权限</span><small>ADMIN</small></RouterLink>
+        <RouterLink v-if="isAdmin" to="/workspace/access" :class="{ 'is-active': active === 'access' }"><i>↗</i><span>访问入口</span><small>ADMIN</small></RouterLink>
         <RouterLink v-if="isAdmin" to="/workspace/skill-audits" :class="{ 'is-active': active === 'skill-audits' }"><i>!</i><span>Skill audits</span><small>ADMIN</small></RouterLink>
         <RouterLink v-if="isAdmin" to="/workspace/skill-installations" :class="{ 'is-active': active === 'skill-installations' }"><i>+</i><span>Skill installations</span><small>ADMIN</small></RouterLink>
       </nav>

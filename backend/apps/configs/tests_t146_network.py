@@ -69,6 +69,7 @@ class ModelConnectionNetworkTests(SimpleTestCase):
             (URLError(socket.gaierror("secret-host")), "dns_failed"),
             (URLError(ssl.SSLError("private-cert")), "tls_failed"),
             (OSError(10013, "blocked"), "local_network_blocked"),
+            (URLError(TimeoutError("provider timed out")), "provider_timeout"),
             (URLError("proxy down"), "proxy_unavailable"),
         )
         for failure, code in failures:

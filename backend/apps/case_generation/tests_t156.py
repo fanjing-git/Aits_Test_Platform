@@ -76,6 +76,26 @@ class T156GenerationTests(SimpleTestCase):
         self.assertNotEqual(result.coverage_report["analysis_method"], "model_verified")
         self.assertEqual(result.round_trace[1]["model_status"], "failed")
 
+    def test_deterministic_generation_uses_test_points_as_minimum_unit(self):
+        payload = {
+            "modules": [{"id": "module-1", "name": "账户"}],
+            "functions": [{"id": "function-1", "module_id": "module-1", "name": "登录"}],
+            "test_points": [
+                {"id": "point-positive", "function_id": "function-1", "type": "positive", "description": "有效账号登录"},
+                {"id": "point-negative", "function_id": "function-1", "type": "negative", "description": "错误密码拒绝"},
+                {"id": "point-boundary", "function_id": "function-1", "type": "boundary", "description": "密码长度边界"},
+            ],
+            "linkages": [],
+        }
+
+        result = generate_cases(payload)
+
+        self.assertEqual(result.coverage_report["test_point_count"], 3)
+        self.assertEqual(result.coverage_report["covered_test_point_ids"], ["point-boundary", "point-negative", "point-positive"])
+        self.assertEqual(result.coverage_report["test_point_coverage_rate"], 1.0)
+        self.assertTrue(all(item["source_test_point_id"] for item in result.cases))
+        self.assertTrue(any("有效账号登录" in item["title"] for item in result.cases))
+
 
 class T156ReviewTests(TestCase):
     """Verify review round failure persistence and route-aware status."""

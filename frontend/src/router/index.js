@@ -55,6 +55,12 @@ const router = createRouter({
       meta: { requiresAuth: true, roles: ['admin'] },
     },
     {
+      path: '/workspace/access',
+      name: 'deployment-access',
+      component: () => import('../views/DeploymentAccessView.vue'),
+      meta: { requiresAuth: true, roles: ['admin'] },
+    },
+    {
       path: '/workspace/prompts',
       name: 'prompt-configs',
       component: () => import('../views/PromptConfigView.vue'),
@@ -70,6 +76,7 @@ const router = createRouter({
     { path: '/workspace/knowledge', name: 'knowledge', component: () => import('../views/KnowledgeView.vue'), meta: { requiresAuth: true } },
     { path: '/workspace/requirements', name: 'requirements', component: () => import('../views/RequirementAnalysisView.vue'), meta: { requiresAuth: true } },
     { path: '/workspace/case-generation', name: 'case-generation', component: () => import('../views/CaseGenerationView.vue'), meta: { requiresAuth: true } },
+    { path: '/workspace/tests', name: 'tests', component: () => import('../views/TestExecutionView.vue'), meta: { requiresAuth: true } },
     { path: '/workspace/skills', name: 'skills', component: () => import('../views/SkillsView.vue'), meta: { requiresAuth: true } },
     { path: '/workspace/skill-audits', name: 'skill-audits', component: () => import('../views/SkillAuditView.vue'), meta: { requiresAuth: true, roles: ['admin'] } },
     { path: '/workspace/skill-installations', name: 'skill-installations', component: () => import('../views/SkillInstallationsView.vue'), meta: { requiresAuth: true, roles: ['admin'] } },

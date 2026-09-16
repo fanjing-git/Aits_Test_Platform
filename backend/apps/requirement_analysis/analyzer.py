@@ -10,8 +10,8 @@ from django.db import transaction
 
 from apps.configs.models import ModelRoutingPolicy
 from apps.configs.routing import ModelRouteError, ModelRouteResolver
+from apps.requirement_analysis.limits import requirement_document_max_bytes
 from apps.requirement_analysis.llm_adapter import ModelAnalysisError, RequirementModelAdapter
-from apps.requirement_analysis.parser import MAX_DOCUMENT_BYTES
 from apps.requirement_analysis.models import RequirementAnalysis, RequirementDocument
 from apps.requirement_analysis.stability import (
     analysis_baseline,
@@ -84,7 +84,7 @@ def _screenshot_payload(document: RequirementDocument) -> tuple[bytes | None, st
         return None, None
     path = Path(document.file_path)
     try:
-        if not path.is_file() or path.stat().st_size > MAX_DOCUMENT_BYTES:
+        if not path.is_file() or path.stat().st_size > requirement_document_max_bytes():
             return None, None
         suffix = path.suffix.casefold()
         mime_type = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}.get(suffix, "image/png")
@@ -144,6 +144,7 @@ def _apply_quality_metadata(
         "quality_status": quality["quality_status"],
         "quality_reason": quality["quality_reason"],
         "evidence_coverage": quality["evidence_coverage"],
+        "mapping_gaps": quality["mapping_gaps"],
         "analysis_counts": quality["counts"],
         "analysis_comparison": quality["comparison"],
         "needs_confirmation": quality["needs_confirmation"],

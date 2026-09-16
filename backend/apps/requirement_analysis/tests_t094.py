@@ -3,7 +3,7 @@
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -61,6 +61,36 @@ class RequirementAnalysisApiTests(TestCase):
         link = self.client.post(self.url, {"project": str(self.project.pk), "title": "Link", "source_type": "online_link"}, format="json")
         self.assertEqual(link.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("source_url", link.data)
+
+    @override_settings(REQUIREMENT_DOCUMENT_MAX_BYTES=8)
+    def test_upload_rejects_configured_size_limit_before_writing_file(self) -> None:
+        self.client.force_authenticate(self.owner)
+        response = self.client.post(
+            self.url,
+            {
+                "project": str(self.project.pk),
+                "title": "Too large",
+                "source_type": "file",
+                "file": SimpleUploadedFile("large.md", b"123456789", content_type="text/markdown"),
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("超过", str(response.data["file"]))
+        self.assertFalse(RequirementDocument.objects.filter(title="Too large").exists())
+
+    def test_parse_reports_missing_persisted_file_separately(self) -> None:
+        document = RequirementDocument.objects.create(
+            project=self.project,
+            title="Missing upload",
+            source_type=RequirementDocument.SourceType.FILE,
+            file_path="E:/does-not-exist/requirement.md",
+            created_by=self.owner,
+        )
+        self.client.force_authenticate(self.owner)
+        response = self.client.post(f"{self.url}{document.pk}/parse/")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("文件不存在", response.data["detail"])
 
     def test_viewer_reads_but_cannot_mutate_and_outsider_is_hidden(self) -> None:
         document = RequirementDocument.objects.create(project=self.project, title="Visible", content_text="A requirement", created_by=self.owner)

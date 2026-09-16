@@ -39,6 +39,7 @@
 
 ## 实现约束
 
+- 项目源码、Markdown、JSON、YAML、配置和测试数据统一使用 UTF-8；PowerShell 读取或写入中文文件必须显式指定 `-Encoding utf8`，禁止使用默认代码页导致终端或文件乱码。修改后须用 UTF-8 重新读取关键片段并执行 `git diff --check`。
 - 前端使用 JavaScript 和纯 CSS，不使用 TypeScript、SCSS 或 Less。
 - 后端公共函数和方法使用类型提示和文档字符串；业务逻辑放在 Service 层，API 使用 DRF Serializer。
 - 使用 Django ORM；外部调用必须捕获错误并安全降级。

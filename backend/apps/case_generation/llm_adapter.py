@@ -89,6 +89,7 @@ class CaseGenerationModelAdapter:
         payload: Mapping[str, Any],
         function_ids: set[str],
         linkage_ids: set[str],
+        test_point_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         """Validate one round while retaining every distinct scenario."""
         cases = payload.get("cases")
@@ -101,10 +102,13 @@ class CaseGenerationModelAdapter:
             source_id = str(item.get("source_function_id", ""))
             case_type = str(item.get("type", "")).strip()
             linkage_id = str(item.get("linkage_id", "")).strip()
+            test_point_id = str(item.get("source_test_point_id", "")).strip()
             if source_id not in function_ids or case_type not in {"positive", "negative", "boundary", "linkage"}:
                 raise ModelAnalysisError("模型用例缺少有效来源或类型。")
             if case_type == "linkage" and linkage_id and linkage_id not in linkage_ids:
                 raise ModelAnalysisError("模型用例引用了不存在的联合场景。")
+            if test_point_id and test_point_ids is not None and test_point_id not in test_point_ids:
+                raise ModelAnalysisError("模型用例引用了不存在的测试点。")
             if not item.get("title") or not isinstance(item.get("steps"), list) or not item.get("steps") or not item.get("expected_result"):
                 raise ModelAnalysisError("模型用例缺少标题、步骤或预期结果。")
             normalized = dict(item)
@@ -114,6 +118,7 @@ class CaseGenerationModelAdapter:
             normalized["expected_result"] = str(item["expected_result"]).strip()
             normalized["title"] = str(item["title"]).strip()
             normalized["linkage_id"] = linkage_id or None
+            normalized["source_test_point_id"] = test_point_id or None
             validated.append(normalized)
         return {
             "cases": validated,
@@ -151,11 +156,12 @@ class CaseGenerationModelAdapter:
             "你正在对同一份需求执行第 %d 轮递进式测试用例分析。%s "
             "需求分析结果和已有用例是输入上下文；不要重复已有用例，不要把五轮当成五次独立生成。 "
             "只输出 JSON：{\"round_analysis\":{...},\"cases\":[...],\"coverage_report\":{...}}。round_analysis 必须说明本轮复核的需求风险、已覆盖测试点和仍待覆盖的缺口。每个新增用例必须包含 "
-            "source_function_id、type、title、steps、expected_result、priority、automatable；"
+            "source_function_id、source_test_point_id、type、title、steps、expected_result、priority、automatable；"
             "source_function_id 必须来自 functions，linkage_id 必须来自 linkages。"
         ) % (round_number, self.ROUND_INSTRUCTIONS[round_number])
         function_ids = {str(item.get("id")) for item in functions}
         linkage_ids = {str(item.get("id")) for item in linkages}
+        test_point_ids = {str(item.get("id")) for item in test_points if item.get("id")}
         return self.adapter.run(
             text=json.dumps(scope, ensure_ascii=False),
             evidence=evidence,
@@ -164,7 +170,7 @@ class CaseGenerationModelAdapter:
             scene_type=PromptConfig.SceneType.CASE_GEN,
             instant_prompt=instruction,
             prompt_override=instruction,
-            validator=lambda payload: self._validate_cases(payload, function_ids, linkage_ids),
+            validator=lambda payload: self._validate_cases(payload, function_ids, linkage_ids, test_point_ids),
             preferred_model_name=preferred_model_name,
             segment_builder=lambda raw_text, raw_evidence, max_chars, max_items: _json_scope_segments(
                 raw_text,

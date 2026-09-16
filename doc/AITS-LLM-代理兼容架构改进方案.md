@@ -291,6 +291,7 @@ google_native
 - `invalid_endpoint`
 - `dns_failed`
 - `tcp_blocked`
+- `provider_timeout`
 - `tls_failed`
 - `proxy_unavailable`
 - `auth_failed`

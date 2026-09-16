@@ -107,7 +107,7 @@ def plan_structured_segments(
 
 
 def split_segment(segment: StructuredSegment) -> tuple[StructuredSegment, ...]:
-    """Split one segment after an output truncation, if a safe split exists."""
+    """Split one segment after a recoverable model-output failure."""
     if len(segment.evidence) > 1:
         midpoint = max(1, len(segment.evidence) // 2)
         groups = (segment.evidence[:midpoint], segment.evidence[midpoint:])
@@ -244,7 +244,8 @@ def execute_structured_segments(
     *,
     max_segments: int = 128,
 ) -> StructuredBatchResult:
-    """Execute bounded segments and split only when output truncation is reported."""
+    """Execute bounded segments and split recoverable model-output failures."""
+    splittable_errors = {"output_truncated", "model_error", "invalid_response"}
     queue = list(segments)
     completed: list[tuple[StructuredSegment, Mapping[str, Any]]] = []
     trace: list[dict[str, Any]] = []
@@ -267,16 +268,26 @@ def execute_structured_segments(
             })
         except Exception as exc:
             code = getattr(exc, "code", "")
-            children = split_segment(segment) if code == "output_truncated" else ()
+            children = (
+                split_segment(segment)
+                if code in splittable_errors and segment.depth < 3
+                else ()
+            )
             if children:
+                split_status = (
+                    "split_after_output_truncated"
+                    if code == "output_truncated"
+                    else "split_after_model_output_error"
+                )
                 trace.append({
                     "segment_id": segment.segment_id,
-                    "status": "split_after_output_truncated",
+                    "status": split_status,
                     "input_chars": segment.input_chars,
                     "evidence_count": len(segment.evidence),
                     "evidence_ids": [str(item.get("id")) for item in segment.evidence if item.get("id")],
                     "attempts": 1,
                     "error_code": code,
+                    "error": str(exc),
                     "children": [child.segment_id for child in children],
                 })
                 queue[0:0] = list(children)

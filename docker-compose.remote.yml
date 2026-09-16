@@ -45,7 +45,10 @@ services:
       POSTGRES_HOST: db
       REDIS_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+      REQUIREMENT_DOCUMENT_ROOT: /app/.runtime/requirement-documents
     command: ["sh", "-c", "python manage.py bootstrap_platform_admin --allow-unconfigured && exec python manage.py runserver 0.0.0.0:8000 --noreload"]
+    volumes:
+      - requirement_documents_data:/app/.runtime/requirement-documents
     ports:
       - "8088:8000"
     depends_on:
@@ -69,6 +72,9 @@ services:
       POSTGRES_HOST: db
       REDIS_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+      REQUIREMENT_DOCUMENT_ROOT: /app/.runtime/requirement-documents
+    volumes:
+      - requirement_documents_data:/app/.runtime/requirement-documents
     depends_on:
       db:
         condition: service_healthy
@@ -101,6 +107,7 @@ services:
 volumes:
   postgres_v5_data:
   redis_v5_data:
+  requirement_documents_data:
 
 networks:
   aits_v5_internal:

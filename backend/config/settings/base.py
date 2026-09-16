@@ -27,12 +27,14 @@ INSTALLED_APPS = [
     "apps.users.apps.UsersConfig",
     "apps.configs.apps.ConfigsConfig",
     "apps.projects.apps.ProjectsConfig",
+    "apps.business_linkage.apps.BusinessLinkageConfig",
     "apps.agents.apps.AgentsConfig",
     "apps.environments.apps.EnvironmentsConfig",
     "apps.knowledge.apps.KnowledgeConfig",
     "apps.skills.apps.SkillsConfig",
     "apps.requirement_analysis.apps.RequirementAnalysisConfig",
     "apps.case_generation.apps.CaseGenerationConfig",
+    "apps.tests.apps.TestsConfig",
 ]
 
 REST_FRAMEWORK = {
@@ -115,3 +117,5 @@ KNOWLEDGE_CHUNK_SIZE = int(os.environ.get("KNOWLEDGE_CHUNK_SIZE", 500))
 KNOWLEDGE_CHUNK_OVERLAP = int(os.environ.get("KNOWLEDGE_CHUNK_OVERLAP", 50))
 REQUIREMENT_DOCUMENT_ROOT = Path(os.environ.get("REQUIREMENT_DOCUMENT_ROOT", BASE_DIR / ".runtime" / "requirement-documents"))
 REQUIREMENT_DOCUMENT_MAX_BYTES = int(os.environ.get("REQUIREMENT_DOCUMENT_MAX_BYTES", 10 * 1024 * 1024))
+PUBLIC_APP_URL = os.environ.get("PUBLIC_APP_URL", "").strip()
+PUBLIC_API_URL = os.environ.get("PUBLIC_API_URL", "").strip()

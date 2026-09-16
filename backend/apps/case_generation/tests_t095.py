@@ -105,6 +105,15 @@ class CaseGenerationApiTests(TestCase):
         self.client.force_authenticate(None)
         self.assertEqual(self.client.get(self.url).status_code, status.HTTP_401_UNAUTHORIZED)
 
+    def test_generation_rejects_analysis_needing_review(self) -> None:
+        analysis = self.document.analyses.order_by("-created_at").first()
+        analysis.quality_status = "needs_review"
+        analysis.coverage_report = {**analysis.coverage_report, "analysis_method": "model_verified"}
+        analysis.save(update_fields=("quality_status", "coverage_report"))
+        self.client.force_authenticate(self.owner)
+        response = self.client.post(self.url, {"document": str(self.document.pk)}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
     def test_model_options_filter_generation_and_review_capabilities(self) -> None:
         from apps.configs.models import ModelConfig
 

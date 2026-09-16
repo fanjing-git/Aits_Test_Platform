@@ -36,7 +36,7 @@ const inviteSaving = ref(false)
 const inviteError = ref('')
 const inviteForm = reactive({ account: '', role: 'viewer', expires_in_hours: 72 })
 const actionResult = ref(null)
-const currentOrigin = window.location.origin
+const fallbackOrigin = window.location.origin
 const auditEvents = ref([])
 const auditError = ref('')
 
@@ -96,7 +96,7 @@ async function submitInvite() {
   try {
     const result = await inviteUser({ ...inviteForm, account: inviteForm.account.trim() })
     inviteOpen.value = false
-    actionResult.value = { title: '邀请链接已生成', label: '一次性激活链接', path: result.activation_path, expires_at: result.expires_at, username: result.user.username }
+    actionResult.value = { title: '邀请链接已生成', label: '一次性激活链接', path: result.activation_path, url: result.activation_url, expires_at: result.expires_at, username: result.user.username }
     await loadUsers()
   } catch (error) {
     inviteError.value = apiError(error, '邀请失败，请检查账号是否重复或服务状态。')
@@ -109,7 +109,7 @@ async function runAccountAction(user, action, successTitle) {
   try {
     const result = await action(user.id)
     const path = result.activation_path || result.reset_path
-    actionResult.value = { title: successTitle, label: result.activation_path ? '一次性激活链接' : '一次性密码重置链接', path, expires_at: result.expires_at, username: user.username }
+    actionResult.value = { title: successTitle, label: result.activation_path ? '一次性激活链接' : '一次性密码重置链接', path, url: result.activation_url || result.reset_url, expires_at: result.expires_at, username: user.username }
     await loadUsers()
   } catch (error) {
     ElMessage.error(apiError(error, '操作失败，请刷新后重试。'))
@@ -127,8 +127,8 @@ async function revokeActions(user) {
 }
 
 async function copyActionLink() {
-  if (!actionResult.value?.path) return
-  const link = `${window.location.origin}${actionResult.value.path}`
+  if (!actionResult.value?.path && !actionResult.value?.url) return
+  const link = actionResult.value.url || `${fallbackOrigin}${actionResult.value.path}`
   try {
     await navigator.clipboard.writeText(link)
   } catch {
@@ -244,7 +244,7 @@ onMounted(loadUsers)
     <div v-if="actionResult" class="modal-backdrop" @click.self="actionResult = null">
       <section class="config-modal user-modal" role="dialog" aria-modal="true" aria-labelledby="action-result-title">
         <header><div><small>ONE-TIME SECURITY LINK</small><h2 id="action-result-title">{{ actionResult.title }}</h2></div><button aria-label="关闭" @click="actionResult = null">×</button></header>
-        <div class="config-form action-result-form"><p>目标账号：<b>{{ actionResult.username }}</b></p><p>链接仅显示在本次操作中，请立即复制并通过安全渠道发送给同事。系统不会保存明文链接。</p><textarea readonly :value="`${currentOrigin}${actionResult.path}`" rows="3"></textarea><small>有效期至：{{ displayDate(actionResult.expires_at) }}</small></div>
+        <div class="config-form action-result-form"><p>目标账号：<b>{{ actionResult.username }}</b></p><p>链接仅显示在本次操作中，请立即复制并通过安全渠道发送给同事。系统不会保存明文链接。</p><textarea readonly :value="actionResult.url || `${fallbackOrigin}${actionResult.path}`" rows="3"></textarea><small>有效期至：{{ displayDate(actionResult.expires_at) }}</small></div>
         <footer><button class="secondary-action" @click="actionResult = null">关闭</button><button class="primary-action" @click="copyActionLink">复制链接</button></footer>
       </section>
     </div>

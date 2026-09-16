@@ -34,6 +34,31 @@ class RequirementModelAdapterTests(SimpleTestCase):
         self.assertEqual(result["functions"][0]["name"], "切换材料标签")
         prompts.resolve.assert_called_once()
 
+    def test_requirement_prompt_requires_item_level_evidence_coverage(self) -> None:
+        runtime = Mock()
+        runtime.generate_structured.return_value = {
+            "modules": [{"id": "module-1", "name": "登录", "evidence_ids": ["e-1"]}],
+            "functions": [{"id": "function-1", "name": "登录", "evidence_ids": ["e-1"]}],
+            "linkages": [],
+            "test_points": [{"id": "point-1", "description": "验证登录", "evidence_ids": ["e-1"]}],
+            "coverage_report": {},
+        }
+        manager = Mock()
+        manager.execute_with_fallback.side_effect = lambda _task, operation, **_kwargs: operation(runtime, SimpleNamespace(name="fake"))
+        prompts = Mock()
+        prompts.resolve.return_value = SimpleNamespace(content="只输出 JSON")
+
+        RequirementModelAdapter(model_manager=manager, prompt_manager=prompts).analyze(
+            text="用户登录系统",
+            evidence=[{"id": "e-1", "text": "用户登录系统"}],
+        )
+
+        instruction = prompts.resolve.call_args.kwargs["instant_prompt"]
+        self.assertIn("每一个对象都必须包含非空 evidence_ids 数组", instruction)
+        self.assertIn("每一条 evidence 都必须至少被一个输出对象引用", instruction)
+        self.assertIn("module_id", instruction)
+        self.assertIn("function_id", instruction)
+
     def test_untrusted_evidence_reference_is_rejected(self) -> None:
         runtime = Mock()
         runtime.generate_structured.return_value = {"modules": [], "functions": [{"id": "f1", "evidence_ids": ["unknown"]}], "linkages": [], "test_points": []}

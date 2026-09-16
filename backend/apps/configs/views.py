@@ -10,6 +10,7 @@ from django.db import transaction
 from django.db.models import Count, DecimalField, IntegerField, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from rest_framework import status, viewsets
+from rest_framework.views import APIView
 from rest_framework.decorators import action
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -20,8 +21,34 @@ from apps.configs.serializers import (ModelCallRecordSerializer, ModelConfigSeri
 from apps.configs.catalog import provider_catalog
 from apps.configs.routing import ModelRouteError, ModelRouteResolver, required_model_types
 from apps.configs.services import ConnectionTester, ProviderConnectionTester, ProviderError, discover_models, canonical_base
+from apps.configs.deployment import DeploymentAccessError, DeploymentAccessService
+from apps.configs.serializers import DeploymentAccessSerializer
 from apps.users.permissions import IsAdminRole
 from core.utils.crypto import SecretDecryptionError
+
+
+class DeploymentAccessView(APIView):
+    """Expose the explicit user access entrypoint to platform administrators."""
+
+    permission_classes = (IsAdminRole,)
+
+    def get(self, request: Request) -> Response:
+        """Return configured access metadata without discovering server addresses."""
+        del request
+        try:
+            data = DeploymentAccessService.describe()
+        except DeploymentAccessError as exc:
+            return Response({"detail": str(exc), "code": "invalid_public_app_url"}, status=400)
+        return Response(DeploymentAccessSerializer(instance=data).data)
+
+    def post(self, request: Request) -> Response:
+        """Run one explicit no-credential health probe for the configured entrypoint."""
+        del request
+        try:
+            data = DeploymentAccessService.check()
+        except DeploymentAccessError as exc:
+            return Response({"detail": str(exc), "code": "invalid_public_app_url"}, status=400)
+        return Response(DeploymentAccessSerializer(instance=data).data)
 
 
 

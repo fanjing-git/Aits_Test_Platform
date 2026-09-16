@@ -384,7 +384,7 @@ class AgentExecutionService:
         if isinstance(exc, AgentExecutionError):
             code = exc.code
         message = str(source) if isinstance(source, (AgentExecutionError, ProviderError)) else "Model execution failed. Check routing, network, and model configuration before retrying."
-        retryable = bool(getattr(source, "retryable", False)) or code in {"timeout", "tcp_blocked", "provider_http_error", "quota_exhausted", "model_execution_failed"}
+        retryable = bool(getattr(source, "retryable", False)) or code in {"timeout", "provider_timeout", "tcp_blocked", "provider_http_error", "quota_exhausted", "model_execution_failed"}
         execution.status = AgentExecution.Status.FAILED
         execution.phase = "failed"
         execution.error_code = str(code)[:80]

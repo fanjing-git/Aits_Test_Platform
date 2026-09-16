@@ -7,6 +7,7 @@ from django.conf import settings
 from rest_framework import serializers
 
 from apps.projects.models import Project
+from apps.requirement_analysis.limits import requirement_document_limit_label, requirement_document_max_bytes
 from apps.requirement_analysis.models import RequirementAnalysis, RequirementDocument
 
 
@@ -23,6 +24,20 @@ class RequirementAnalysisSerializer(serializers.ModelSerializer):
             "quality_status", "created_at",
         )
         read_only_fields = fields
+
+
+class RequirementAnalysisConfirmationSerializer(serializers.Serializer):
+    """Validate the explicit review checklist submitted before generation."""
+
+    reviewed_test_point_ids = serializers.ListField(
+        child=serializers.CharField(), required=False, default=list, allow_empty=True,
+    )
+    reviewed_evidence_ids = serializers.ListField(
+        child=serializers.CharField(), required=False, default=list, allow_empty=True,
+    )
+    reviewed_analysis_item_ids = serializers.ListField(
+        child=serializers.CharField(), required=False, default=list, allow_empty=True,
+    )
 
 
 class RequirementDocumentSerializer(serializers.ModelSerializer):
@@ -81,8 +96,8 @@ class RequirementDocumentSerializer(serializers.ModelSerializer):
             allowed = {".txt", ".md", ".markdown", ".pdf", ".docx", ".xlsx", ".json", ".png", ".jpg", ".jpeg", ".webp"}
             if suffix not in allowed:
                 raise serializers.ValidationError({"file": "仅支持 PDF、Word、Excel、Markdown、Swagger、文本和图片文件。"})
-            if upload.size > settings.REQUIREMENT_DOCUMENT_MAX_BYTES:
-                raise serializers.ValidationError({"file": "文件超过10MB限制。"})
+            if upload.size > requirement_document_max_bytes():
+                raise serializers.ValidationError({"file": f"文件超过{requirement_document_limit_label()}限制。"})
         return attrs
 
     def create(self, validated_data):

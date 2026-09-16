@@ -14,13 +14,14 @@ from apps.configs.serializers import SafeModelSummarySerializer
 from apps.projects.permissions import is_platform_admin
 from apps.requirement_analysis.analyzer import RequirementAnalysisError, analyze_requirement_document
 from apps.requirement_analysis.linkages import LinkageAnalysisError, identify_document_linkages
+from apps.requirement_analysis.limits import requirement_document_limit_label, requirement_document_max_bytes
 from apps.requirement_analysis.llm_adapter import ModelAnalysisError, RequirementModelAdapter
 from apps.requirement_analysis.models import RequirementAnalysis, RequirementDocument
-from apps.requirement_analysis.parser import MAX_DOCUMENT_BYTES, DocumentParseError, parse_file, parse_requirement_document
+from apps.requirement_analysis.parser import DocumentParseError, parse_file, parse_requirement_document
 from apps.requirement_analysis.permissions import RequirementPermission, can_manage_requirements
-from apps.requirement_analysis.serializers import RequirementAnalysisSerializer, RequirementDocumentSerializer
+from apps.requirement_analysis.serializers import RequirementAnalysisConfirmationSerializer, RequirementAnalysisSerializer, RequirementDocumentSerializer
 from apps.requirement_analysis.screenshot_analyzer import analyze_screenshot_file
-from apps.requirement_analysis.services import RequirementAnalysisRecordService
+from apps.requirement_analysis.services import RequirementAnalysisConfirmationError, RequirementAnalysisRecordService
 from apps.skills.orchestration import SkillExecutionService
 
 
@@ -65,6 +66,24 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
         """Raise a permission error for analysis-mutating actions."""
         if not can_manage_requirements(self.request.user, document.project):
             raise PermissionDenied("当前项目角色不能执行需求分析操作。")
+
+    @action(detail=True, methods=("post",), url_path="confirm-analysis")
+    def confirm_analysis(self, request, pk=None):
+        """Allow a project manager to confirm a reviewable analysis for generation."""
+        document = self.get_object()
+        self._require_manager(document)
+        confirmation = RequirementAnalysisConfirmationSerializer(data=request.data)
+        confirmation.is_valid(raise_exception=True)
+        try:
+            document = RequirementAnalysisRecordService().confirm_analysis(
+                document,
+                request.user,
+                **confirmation.validated_data,
+            )
+        except RequirementAnalysisConfirmationError as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
+        document.refresh_from_db()
+        return Response(self.get_serializer(document).data)
 
     def _analysis_failure_response(self, document, exc: RequirementAnalysisError) -> Response:
         """Return a structured, safe analysis failure for the workbench."""
@@ -231,11 +250,17 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
             raise ValidationError({"detail": "截图文件不存在，请重新导入图片后执行视觉分析。", "code": "image_required"})
 
         path = Path(document.file_path)
+        if not path.is_file():
+            raise ValidationError({"detail": "截图文件不存在，请重新导入图片。", "code": "image_file_missing"})
         try:
-            if not path.is_file() or path.stat().st_size > MAX_DOCUMENT_BYTES:
-                raise DocumentParseError("截图不存在或超过10MB限制。")
+            file_size = path.stat().st_size
+        except OSError as exc:
+            raise ValidationError({"detail": "截图文件无法读取，请重新导入图片。", "code": "image_unreadable"}) from exc
+        if file_size > requirement_document_max_bytes():
+            raise ValidationError({"detail": f"截图超过{requirement_document_limit_label()}限制。", "code": "image_file_too_large"})
+        try:
             image_bytes = path.read_bytes()
-        except (DocumentParseError, OSError) as exc:
+        except OSError as exc:
             raise ValidationError({"detail": "截图文件无法读取，请重新导入图片。", "code": "image_unreadable"}) from exc
 
         evidence = list(document.parse_evidence) if isinstance(document.parse_evidence, list) else []

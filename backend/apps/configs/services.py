@@ -241,15 +241,15 @@ def request_json(
             raise ProviderError("无法解析供应商地址，请检查 DNS 和服务器网络。", "dns_failed") from exc
         if isinstance(reason, ssl.SSLError):
             raise ProviderError("与供应商建立 TLS 连接失败，请检查证书、系统时间和代理 CA。", "tls_failed") from exc
-        if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
-            raise ProviderError("连接供应商超时，请检查 TCP 出站策略、代理和供应商地域地址。", "tcp_blocked") from exc
+        if isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
+            raise ProviderError("模型供应商响应超时，请稍后重试或调整模型超时配置。", "provider_timeout") from exc
         raise ProviderError("无法建立供应商网络连接，请检查 TCP 出站策略、代理和 API 地址。", "tcp_blocked") from exc
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise ProviderError("供应商没有返回有效 JSON，可能填写了网页地址。", "invalid_response") from exc
 
 
 OPENAI_COMPATIBLE_PROVIDERS = frozenset({"openai", "qwen", "deepseek", "azure", "custom", "local"})
-DEFAULT_STRUCTURED_TIMEOUT_SECONDS = 30
+DEFAULT_STRUCTURED_TIMEOUT_SECONDS = 120
 MAX_STRUCTURED_TIMEOUT_SECONDS = 120
 
 
