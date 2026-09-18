@@ -8,6 +8,7 @@ from rest_framework.test import APIClient
 from apps.case_generation.models import CaseGenerationRecord
 from apps.projects.models import Project, ProjectMember
 from apps.requirement_analysis.models import RequirementAnalysis, RequirementDocument
+from apps.users.models import UserProfile
 
 
 class RequirementAnalysisClearTests(TestCase):
@@ -18,6 +19,8 @@ class RequirementAnalysisClearTests(TestCase):
         user_model = get_user_model()
         self.owner = user_model.objects.create_user(username="t155-clear-owner")
         self.viewer = user_model.objects.create_user(username="t155-clear-viewer")
+        self.owner.profile.role = UserProfile.Role.TEST_LEADER
+        self.owner.profile.save(update_fields=("role",))
         self.project = Project.objects.create(name="T155 clear project", created_by=self.owner)
         ProjectMember.objects.create(project=self.project, user=self.viewer, role=ProjectMember.Role.VIEWER)
         self.document = RequirementDocument.objects.create(

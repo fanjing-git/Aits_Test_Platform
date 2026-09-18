@@ -1,7 +1,10 @@
 """REST endpoints for requirement ingestion, analysis and linkages."""
 
 from pathlib import Path
+from uuid import uuid4
 
+from django.conf import settings
+from core.task_state import task_runtime, utc_now
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -19,9 +22,10 @@ from apps.requirement_analysis.llm_adapter import ModelAnalysisError, Requiremen
 from apps.requirement_analysis.models import RequirementAnalysis, RequirementDocument
 from apps.requirement_analysis.parser import DocumentParseError, parse_file, parse_requirement_document
 from apps.requirement_analysis.permissions import RequirementPermission, can_manage_requirements
-from apps.requirement_analysis.serializers import RequirementAnalysisConfirmationSerializer, RequirementAnalysisSerializer, RequirementDocumentSerializer
+from apps.requirement_analysis.serializers import RequirementAnalysisConfirmationSerializer, RequirementAnalysisSerializer, RequirementDocumentSerializer, RequirementTestPointReviewSerializer
 from apps.requirement_analysis.screenshot_analyzer import analyze_screenshot_file
 from apps.requirement_analysis.services import RequirementAnalysisConfirmationError, RequirementAnalysisRecordService
+from apps.requirement_analysis.tasks import run_requirement_analysis, set_requirement_runtime
 from apps.skills.orchestration import SkillExecutionService
 
 
@@ -79,6 +83,24 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
                 document,
                 request.user,
                 **confirmation.validated_data,
+            )
+        except RequirementAnalysisConfirmationError as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
+        document.refresh_from_db()
+        return Response(self.get_serializer(document).data)
+
+    @action(detail=True, methods=("post",), url_path="review-test-points")
+    def review_test_points(self, request, pk=None):
+        """Persist selected reviewed test points without finalizing the analysis."""
+        document = self.get_object()
+        self._require_manager(document)
+        review = RequirementTestPointReviewSerializer(data=request.data)
+        review.is_valid(raise_exception=True)
+        try:
+            document = RequirementAnalysisRecordService().mark_test_points_reviewed(
+                document,
+                request.user,
+                **review.validated_data,
             )
         except RequirementAnalysisConfirmationError as exc:
             raise ValidationError({"detail": str(exc)}) from exc
@@ -183,8 +205,44 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
             else ModelRoutingPolicy.FeatureKey.REQUIREMENT_ANALYSIS
         )
         preferred_model_name = self._preferred_model_name(request, feature_key)
+        raw_resume_round = request.data.get("resume_round", 1)
         try:
-            analyze_requirement_document(document, preferred_model_name=preferred_model_name)
+            resume_from_round = int(raw_resume_round or 1)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"resume_round": "恢复轮次必须是 1 到 5 的整数。"}) from exc
+        if not 1 <= resume_from_round <= 5:
+            raise ValidationError({"resume_round": "恢复轮次必须是 1 到 5 的整数。"})
+        current_runtime = (document.analysis_baseline or {}).get("_task_runtime")
+        if isinstance(current_runtime, dict) and current_runtime.get("status") in {"pending", "running", "cancel_requested"}:
+            return Response({"detail": "当前需求分析任务仍在处理中，请等待完成或先取消。", "task_runtime": current_runtime}, status=status.HTTP_409_CONFLICT)
+        if not settings.CELERY_TASK_ALWAYS_EAGER:
+            task_id = uuid4().hex
+            runtime = task_runtime(
+                task_id,
+                "requirement_analysis",
+                status="pending",
+                current_step="排队中",
+                current_round=max(0, resume_from_round - 1),
+                completed_rounds=max(0, resume_from_round - 1),
+            )
+            set_requirement_runtime(document, runtime, status=RequirementDocument.Status.ANALYZING)
+            try:
+                run_requirement_analysis.apply_async(
+                    args=[str(document.pk), preferred_model_name, resume_from_round, task_id],
+                    task_id=task_id,
+                )
+            except Exception as exc:
+                runtime.update({"status": "failed", "error_code": "task_enqueue_failed", "detail": str(exc)[:200]})
+                set_requirement_runtime(document, runtime, status=RequirementDocument.Status.FAILED)
+                return Response({"detail": "分析任务提交失败，请稍后重试。", "code": "task_enqueue_failed", "task_runtime": runtime}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            document.refresh_from_db()
+            return Response({"document": self.get_serializer(document).data, "task_runtime": runtime}, status=status.HTTP_202_ACCEPTED)
+        try:
+            analyze_requirement_document(
+                document,
+                preferred_model_name=preferred_model_name,
+                resume_from_round=resume_from_round,
+            )
         except RequirementAnalysisError as exc:
             return self._analysis_failure_response(document, exc)
         document.refresh_from_db()
@@ -195,6 +253,66 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
         data = self.get_serializer(document).data
         data["skill_execution"] = skill.as_dict() if skill else None
         return Response(data)
+
+    @action(detail=True, methods=("post",), url_path="cancel-analysis")
+    def cancel_analysis(self, request, pk=None):
+        """Request cooperative cancellation of a queued or running analysis task."""
+        document = self.get_object()
+        self._require_manager(document)
+        runtime = dict((document.analysis_baseline or {}).get("_task_runtime") or {})
+        if runtime.get("status") not in {"pending", "running", "cancel_requested"}:
+            raise ValidationError({"detail": "当前没有可取消的需求分析任务。"})
+        runtime.update({"status": "cancel_requested", "cancel_requested": True, "current_step": "正在取消", "updated_at": utc_now()})
+        set_requirement_runtime(document, runtime, status=RequirementDocument.Status.ANALYZING)
+        task_id = runtime.get("task_id")
+        if task_id:
+            try:
+                from config.celery_app import app
+                app.control.revoke(str(task_id), terminate=False)
+            except Exception:
+                pass
+        return Response({"document_status": document.status, "task_runtime": runtime})
+
+    @action(detail=True, methods=("post",), url_path="retry-round")
+    def retry_round(self, request, pk=None):
+        """Retry a failed or partial semantic round through the normal analysis contract."""
+        return self.analyze(request, pk=pk)
+
+    @action(detail=True, methods=("get",), url_path="analysis-progress")
+    def analysis_progress(self, request, pk=None):
+        """Return safe five-round progress and historical round summaries."""
+        document = self.get_object()
+        latest = document.analyses.order_by("-created_at").first()
+        report = dict(latest.coverage_report or {}) if latest else {}
+        runtime = dict(
+            (document.analysis_baseline or {}).get("_task_runtime")
+            or (document.analysis_baseline or {}).get("_last_task_runtime")
+            or report.get("task_runtime")
+            or {}
+        )
+        history = []
+        for analysis in document.analyses.order_by("-created_at")[:20]:
+            coverage = dict(analysis.coverage_report or {})
+            history.append({
+                "id": str(analysis.id),
+                "created_at": analysis.created_at,
+                "quality_status": analysis.quality_status,
+                "round_count": coverage.get("round_count", 0),
+                "completed_rounds": coverage.get("completed_rounds", 0),
+                "round_execution_status": coverage.get("round_execution_status", "unknown"),
+                "total_calls": coverage.get("total_calls", 0),
+                "rounds": coverage.get("rounds", []),
+            })
+        return Response({
+            "document": str(document.id),
+            "document_status": document.status,
+            "analysis_id": str(latest.id) if latest else None,
+            "quality_status": latest.quality_status if latest else None,
+            "round_progress": report.get("round_progress", {"current_round": 0, "total_rounds": 5, "status": "pending"}),
+            "rounds": report.get("rounds", []),
+            "task_runtime": runtime or None,
+            "history": history,
+        })
 
     @action(detail=True, methods=("post",))
     def linkages(self, request, pk=None):

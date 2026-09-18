@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import base64
-import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Protocol
 
@@ -70,17 +69,11 @@ def _validate_payload(payload: Mapping[str, Any], evidence_ids: set[str], eviden
             if not item_id or item_id in seen_ids:
                 raise ModelAnalysisError("模型输出包含缺失或重复标识。")
             seen_ids.add(item_id)
-            cited = item.get("evidence_ids", [])
-            if cited and (not isinstance(cited, list) or not set(map(str, cited)).issubset(evidence_ids)):
-                raise ModelAnalysisError("模型输出引用了不存在的证据。")
-    source_text = " ".join(str(item.get("text", "")) for item in evidence).strip().casefold()
-    if source_text:
-        serialized = json.dumps(result, ensure_ascii=False).casefold()
-        anchors = set(re.findall(r"[a-z0-9][a-z0-9_-]{2,}", source_text))
-        cjk = "".join(re.findall(r"[\u4e00-\u9fff]", source_text))
-        anchors.update(cjk[index : index + 2] for index in range(max(0, len(cjk) - 1)))
-        if anchors and not any(anchor in serialized for anchor in anchors):
-            raise ModelAnalysisError("模型输出与需求证据无可验证关联。")
+            cited = item.get("evidence_ids")
+            if not isinstance(cited, list) or not cited:
+                raise ModelAnalysisError("模型输出对象缺少证据引用。", code="invalid_response")
+            if not set(map(str, cited)).issubset(evidence_ids):
+                raise ModelAnalysisError("模型输出引用了不存在的证据。", code="invalid_response")
     coverage = dict(payload.get("coverage_report") or {}) if isinstance(payload.get("coverage_report"), Mapping) else {}
     result["coverage_report"] = coverage
     return result
@@ -190,8 +183,13 @@ class RequirementModelAdapter:
         image_bytes: bytes | None = None,
         image_mime_type: str | None = None,
         preferred_model_name: str | None = None,
+        prompt_override: str | None = None,
     ) -> dict[str, Any]:
-        """Return validated model output or raise a safe, retryable error."""
+        """Return validated model output or raise a safe, retryable error.
+
+        ``prompt_override`` is an optional bounded orchestration instruction used
+        by T155C; existing callers retain the resolved scene prompt by default.
+        """
         evidence_ids = {str(item.get("id")) for item in evidence if item.get("id")}
         return self.run(
             text=text,
@@ -202,6 +200,7 @@ class RequirementModelAdapter:
             image_bytes=image_bytes,
             image_mime_type=image_mime_type,
             preferred_model_name=preferred_model_name,
+            prompt_override=prompt_override,
             validator=lambda payload: _validate_payload(payload, evidence_ids, evidence),
         )
 
@@ -283,7 +282,8 @@ class RequirementModelAdapter:
             project_name=project_name,
             instant_prompt=instruction,
         )
-        prompt_content = prompt_override.strip() if isinstance(prompt_override, str) and prompt_override.strip() else resolved.content
+        override = prompt_override.strip() if isinstance(prompt_override, str) and prompt_override.strip() else ""
+        prompt_content = f"{resolved.content}\n\n{override}" if override else resolved.content
         feature_key = {
             "screenshot": ModelRoutingPolicy.FeatureKey.SCREENSHOT_ANALYSIS,
             "case_gen": ModelRoutingPolicy.FeatureKey.CASE_GENERATION,

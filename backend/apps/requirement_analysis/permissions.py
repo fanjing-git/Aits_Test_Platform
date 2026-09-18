@@ -3,11 +3,25 @@
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 from apps.projects.permissions import is_platform_admin, project_role
+from apps.users.permissions import PlatformAction, get_permission_scope, get_user_role
 
 
 def can_manage_requirements(user, project) -> bool:
-    """Return whether a user may create or change requirement assets."""
-    return is_platform_admin(user) or project_role(user, project) in {"owner", "manager"} or getattr(project, "created_by_id", None) == getattr(user, "pk", None)
+    """Require case capability and manager-level access to the project."""
+    return bool(
+        is_platform_admin(user)
+        or (
+            (
+                project_role(user, project) in {"owner", "manager"}
+                or getattr(project, "created_by_id", None)
+                == getattr(user, "pk", None)
+            )
+            and get_permission_scope(
+                get_user_role(user), PlatformAction.CREATE_CASE
+            )
+            is not None
+        )
+    )
 
 
 class RequirementPermission(BasePermission):

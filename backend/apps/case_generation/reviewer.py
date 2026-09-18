@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from core.task_state import CancelCheck, ProgressCallback, ensure_not_cancelled
 from apps.case_generation.llm_adapter import CaseReviewModelAdapter
 from apps.case_generation.models import CaseGenerationRecord
 from apps.configs.models import ModelRoutingPolicy
@@ -63,6 +64,29 @@ def _approval(issues: list[dict[str, Any]]) -> bool:
     return not any(item.get("severity") in {"high", "medium"} for item in issues)
 
 
+def _has_reviewable_cases(record: CaseGenerationRecord) -> bool:
+    """Return whether a generation record contains at least one case object."""
+    return isinstance(record.cases, list) and any(isinstance(item, dict) for item in record.cases)
+
+
+def _skip_empty_review(record: CaseGenerationRecord) -> CaseGenerationRecord:
+    """Finish review immediately when generation produced no reviewable cases."""
+    record.review_rounds = 0
+    record.review_report = {
+        "approved": False,
+        "case_count": 0,
+        "issue_count": 0,
+        "round_trace": [],
+        "analysis_method": "not_applicable",
+        "execution_status": "skipped",
+        "skipped": True,
+        "message": "当前记录没有可评审的用例。",
+    }
+    record.status = CaseGenerationRecord.Status.COMPLETED
+    record.save(update_fields=("review_rounds", "review_report", "status"))
+    return record
+
+
 def review_cases(
     record: CaseGenerationRecord,
     *,
@@ -70,9 +94,11 @@ def review_cases(
     preferred_model_name: str | None = None,
     allow_deterministic_baseline: bool = True,
     route_metadata: Mapping[str, Any] | None = None,
+    progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> ReviewResult:
     """Review cases for completeness, coverage, consistency and risk."""
-    if not isinstance(record.cases, list) or not record.cases:
+    if not _has_reviewable_cases(record):
         raise CaseReviewError("生成记录没有可评审的用例。")
     cases = [item for item in record.cases if isinstance(item, dict)]
     issues = _deterministic_issues(cases)
@@ -83,6 +109,15 @@ def review_cases(
 
     if model_adapter:
         for review_round in range(1, 6):
+            ensure_not_cancelled(cancel_check)
+            if progress_callback:
+                progress_callback({
+                    "status": "running",
+                    "current_step": f"用例评审·第{review_round}轮",
+                    "current_round": review_round,
+                    "total_rounds": 5,
+                    "completed_rounds": review_round - 1,
+                })
             try:
                 model_result = model_adapter.review(
                     record=record,
@@ -109,6 +144,15 @@ def review_cases(
                     if isinstance(coverage.get("model_route"), dict):
                         round_entry["model_route"] = coverage["model_route"]
                 trace.append(round_entry)
+                if progress_callback:
+                    progress_callback({
+                        "status": "running",
+                        "current_step": f"用例评审·第{review_round}轮已完成",
+                        "current_round": review_round,
+                        "total_rounds": 5,
+                        "completed_rounds": review_round,
+                        "round": dict(round_entry),
+                    })
             except ModelAnalysisError as exc:
                 failure = {
                     "round": review_round,
@@ -151,6 +195,15 @@ def review_cases(
     else:
         stages = ("initial_review", "requirement_compare", "deviation_correction", "re_review", "final_review_report")
         for index, stage in enumerate(stages, start=1):
+            ensure_not_cancelled(cancel_check)
+            if progress_callback:
+                progress_callback({
+                    "status": "running",
+                    "current_step": f"用例评审·第{index}轮",
+                    "current_round": index,
+                    "total_rounds": 5,
+                    "completed_rounds": index - 1,
+                })
             corrected = 0
             if index == 3:
                 for item in cases:
@@ -169,6 +222,15 @@ def review_cases(
             if corrected:
                 entry["corrected"] = corrected
             trace.append(entry)
+            if progress_callback:
+                progress_callback({
+                    "status": "running",
+                    "current_step": f"用例评审·第{index}轮已完成",
+                    "current_round": index,
+                    "total_rounds": 5,
+                    "completed_rounds": index,
+                    "round": dict(entry),
+                })
 
     approved = _approval(issues)
     method = "model_verified" if len(model_results) == 5 and not fallback_used else ("deterministic_fallback" if fallback_used else "deterministic_baseline")
@@ -209,8 +271,12 @@ def review_generation_record(
     *,
     model_adapter: CaseReviewModelAdapter | None = None,
     preferred_model_name: str | None = None,
+    progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> CaseGenerationRecord:
     """Persist a five-round review report while retaining generated cases."""
+    if not _has_reviewable_cases(record):
+        return _skip_empty_review(record)
     record.status = CaseGenerationRecord.Status.REVIEWING
     record.save(update_fields=("status",))
     route = None
@@ -231,6 +297,8 @@ def review_generation_record(
             preferred_model_name=preferred_model_name,
             allow_deterministic_baseline=not has_compatible_model,
             route_metadata=route.as_dict(),
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
         )
         record.review_rounds = 5
         record.review_report = {**result.report, "issues": result.issues, "round_trace": result.round_trace}

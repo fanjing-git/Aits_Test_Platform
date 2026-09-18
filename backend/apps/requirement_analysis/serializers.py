@@ -9,21 +9,47 @@ from rest_framework import serializers
 from apps.projects.models import Project
 from apps.requirement_analysis.limits import requirement_document_limit_label, requirement_document_max_bytes
 from apps.requirement_analysis.models import RequirementAnalysis, RequirementDocument
+from apps.requirement_analysis.stability import analysis_review_state
 
 
 class RequirementAnalysisSerializer(serializers.ModelSerializer):
     """Expose structured analysis without server file paths or secrets."""
 
     document_title = serializers.CharField(source="document.title", read_only=True)
+    analysis_complete = serializers.SerializerMethodField()
+    manual_review_status = serializers.SerializerMethodField()
+    manual_review_complete = serializers.SerializerMethodField()
+    generation_allowed = serializers.SerializerMethodField()
 
     class Meta:
         model = RequirementAnalysis
         fields = (
             "id", "document", "document_title", "modules", "functions", "linkages",
             "test_points", "coverage_report", "source_fingerprint", "analysis_fingerprint",
-            "quality_status", "created_at",
+            "quality_status", "analysis_complete", "manual_review_status", "manual_review_complete",
+            "generation_allowed", "created_at",
         )
         read_only_fields = fields
+
+    def _review_state(self, obj):
+        """Return the shared review state for this persisted analysis."""
+        return analysis_review_state(obj.quality_status, obj.coverage_report)
+
+    def get_analysis_complete(self, obj):
+        """Expose whether structural analysis quality checks completed."""
+        return self._review_state(obj)["analysis_complete"]
+
+    def get_manual_review_status(self, obj):
+        """Expose pending, confirmed, or blocked manual-review state."""
+        return self._review_state(obj)["manual_review_status"]
+
+    def get_manual_review_complete(self, obj):
+        """Expose whether the complete manual review checklist was confirmed."""
+        return self._review_state(obj)["manual_review_complete"]
+
+    def get_generation_allowed(self, obj):
+        """Expose the final downstream case-generation gate."""
+        return self._review_state(obj)["generation_allowed"]
 
 
 class RequirementAnalysisConfirmationSerializer(serializers.Serializer):
@@ -36,6 +62,17 @@ class RequirementAnalysisConfirmationSerializer(serializers.Serializer):
         child=serializers.CharField(), required=False, default=list, allow_empty=True,
     )
     reviewed_analysis_item_ids = serializers.ListField(
+        child=serializers.CharField(), required=False, default=list, allow_empty=True,
+    )
+    reviewed_conflict_ids = serializers.ListField(
+        child=serializers.CharField(), required=False, default=list, allow_empty=True,
+    )
+
+
+class RequirementTestPointReviewSerializer(serializers.Serializer):
+    """Validate the test-point subset explicitly marked as reviewed."""
+
+    reviewed_test_point_ids = serializers.ListField(
         child=serializers.CharField(), required=False, default=list, allow_empty=True,
     )
 

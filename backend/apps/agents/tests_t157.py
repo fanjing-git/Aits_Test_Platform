@@ -10,6 +10,7 @@ from rest_framework.test import APITestCase
 from apps.agents.models import Agent, AgentExecution
 from apps.configs.models import ModelConfig
 from apps.projects.models import Project, ProjectMember
+from apps.users.models import UserProfile
 
 
 class AgentExecutionApiTests(APITestCase):
@@ -21,6 +22,12 @@ class AgentExecutionApiTests(APITestCase):
         self.member = users.objects.create_user(username="t157-member")
         self.viewer = users.objects.create_user(username="t157-viewer")
         self.outsider = users.objects.create_user(username="t157-outsider")
+        for user, platform_role in (
+            (self.owner, UserProfile.Role.TEST_LEADER),
+            (self.member, UserProfile.Role.TESTER),
+        ):
+            user.profile.role = platform_role
+            user.profile.save(update_fields=("role",))
         self.project = Project.objects.create(name="T157 Project", created_by=self.owner)
         for user, role in (
             (self.owner, ProjectMember.Role.OWNER),

@@ -12,6 +12,7 @@ from apps.case_generation.generator import CaseGenerationError, generate_documen
 from apps.projects.models import Project
 from apps.requirement_analysis.models import RequirementDocument
 from apps.requirement_analysis.stability import analysis_mapping_gaps, assess_quality
+from apps.users.models import UserProfile
 
 
 def _payload(module_count: int) -> dict:
@@ -34,6 +35,11 @@ def _payload(module_count: int) -> dict:
         ],
         "coverage_report": {},
     }
+
+
+def _round_effect(*responses: object) -> list[object]:
+    """Repeat each historical response across T155C's five semantic rounds."""
+    return [response for response in responses for _ in range(5)]
 
 
 class RequirementAnalysisQualityTests(SimpleTestCase):
@@ -87,6 +93,8 @@ class RequirementAnalysisRepeatRunTests(TestCase):
     def setUp(self) -> None:
         self.client = APIClient()
         user = get_user_model().objects.create_user(username="t155b-owner")
+        user.profile.role = UserProfile.Role.TEST_LEADER
+        user.profile.save(update_fields=("role",))
         self.client.force_authenticate(user)
         project = Project.objects.create(name="T155B project", created_by=user)
         self.document = RequirementDocument.objects.create(
@@ -115,7 +123,7 @@ class RequirementAnalysisRepeatRunTests(TestCase):
     def test_material_count_drop_is_not_marked_complete(self) -> None:
         with patch(
             "apps.requirement_analysis.analyzer.RequirementModelAdapter.analyze",
-            side_effect=[_payload(3), _payload(1)],
+            side_effect=_round_effect(_payload(3), _payload(1)),
         ):
             first = self.client.post(f"/api/requirement-documents/{self.document.pk}/analyze/", format="json")
             second = self.client.post(f"/api/requirement-documents/{self.document.pk}/analyze/", format="json")
@@ -157,7 +165,7 @@ class RequirementAnalysisRepeatRunTests(TestCase):
         )
         with patch(
             "apps.requirement_analysis.analyzer.RequirementModelAdapter.analyze",
-            side_effect=failure,
+            side_effect=[failure],
         ):
             response = self.client.post(f"/api/requirement-documents/{self.document.pk}/analyze/", format="json")
 
@@ -178,7 +186,7 @@ class RequirementAnalysisRepeatRunTests(TestCase):
         failure = ModelAnalysisError("provider unavailable", code="provider_http_error")
         with patch(
             "apps.requirement_analysis.analyzer.RequirementModelAdapter.analyze",
-            side_effect=[_payload(3), failure, _payload(1)],
+            side_effect=[_payload(3)] * 5 + [failure] + [_payload(1)] * 5,
         ):
             first = self.client.post(f"/api/requirement-documents/{self.document.pk}/analyze/", format="json")
             failed = self.client.post(f"/api/requirement-documents/{self.document.pk}/analyze/", format="json")
@@ -212,7 +220,7 @@ class RequirementAnalysisRepeatRunTests(TestCase):
     def test_clear_preserves_baseline_for_next_comparison(self) -> None:
         with patch(
             "apps.requirement_analysis.analyzer.RequirementModelAdapter.analyze",
-            side_effect=[_payload(3), _payload(1)],
+            side_effect=_round_effect(_payload(3), _payload(1)),
         ):
             first = self.client.post(f"/api/requirement-documents/{self.document.pk}/analyze/", format="json")
             self.assertEqual(first.status_code, status.HTTP_200_OK)

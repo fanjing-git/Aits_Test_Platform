@@ -62,6 +62,8 @@ class CaseReviewTests(TestCase):
         project = Project.objects.create(name="Case review project", created_by=user)
         document = RequirementDocument.objects.create(project=project, title="Login", content_text="用户可以登录系统。", created_by=user)
         analysis = analyze_requirement_document(document)
+        analysis.coverage_report = {**analysis.coverage_report, "manual_confirmation": {"confirmed": True}}
+        analysis.save(update_fields=("coverage_report",))
         self.record = generate_document_cases(document, analysis)
 
     def test_review_runs_five_rounds_and_persists_report(self) -> None:
@@ -75,11 +77,14 @@ class CaseReviewTests(TestCase):
         self.record.cases = []
         with self.assertRaises(CaseReviewError): review_cases(self.record)
 
-    def test_review_failure_is_retained_for_audit(self) -> None:
+    def test_empty_review_is_skipped_without_entering_reviewing(self) -> None:
         self.record.cases = []
-        with self.assertRaises(CaseReviewError): review_generation_record(self.record)
+        reviewed = review_generation_record(self.record)
         self.record.refresh_from_db()
-        self.assertEqual(self.record.status, CaseGenerationRecord.Status.FAILED)
+        self.assertEqual(reviewed.status, CaseGenerationRecord.Status.COMPLETED)
+        self.assertEqual(self.record.status, CaseGenerationRecord.Status.COMPLETED)
+        self.assertEqual(self.record.review_report["execution_status"], "skipped")
+        self.assertEqual(self.record.review_report["message"], "当前记录没有可评审的用例。")
 
     def test_model_review_is_merged_into_final_report(self) -> None:
         fake = Mock()

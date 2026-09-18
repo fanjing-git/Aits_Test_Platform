@@ -59,6 +59,29 @@ class RequirementModelAdapterTests(SimpleTestCase):
         self.assertIn("module_id", instruction)
         self.assertIn("function_id", instruction)
 
+    def test_round_prompt_keeps_base_schema_contract(self) -> None:
+        runtime = Mock()
+        runtime.generate_structured.return_value = {
+            "modules": [{"id": "m1", "name": "登录", "evidence_ids": ["e-1"]}],
+            "functions": [{"id": "f1", "name": "登录", "evidence_ids": ["e-1"]}],
+            "linkages": [],
+            "test_points": [{"id": "p1", "description": "验证登录", "evidence_ids": ["e-1"]}],
+            "coverage_report": {},
+        }
+        manager = Mock()
+        manager.execute_with_fallback.side_effect = lambda _task, operation, **_kwargs: operation(runtime, SimpleNamespace(name="fake"))
+        prompts = Mock(); prompts.resolve.return_value = SimpleNamespace(content="基础结构化契约")
+
+        RequirementModelAdapter(model_manager=manager, prompt_manager=prompts).analyze(
+            text="用户登录系统",
+            evidence=[{"id": "e-1", "text": "用户登录系统"}],
+            prompt_override="T155C 当前轮次指令",
+        )
+
+        prompt = runtime.generate_structured.call_args.kwargs["prompt"]
+        self.assertIn("基础结构化契约", prompt)
+        self.assertIn("T155C 当前轮次指令", prompt)
+
     def test_untrusted_evidence_reference_is_rejected(self) -> None:
         runtime = Mock()
         runtime.generate_structured.return_value = {"modules": [], "functions": [{"id": "f1", "evidence_ids": ["unknown"]}], "linkages": [], "test_points": []}
@@ -67,6 +90,46 @@ class RequirementModelAdapterTests(SimpleTestCase):
         prompts = Mock(); prompts.resolve.return_value = SimpleNamespace(content="JSON")
         with self.assertRaises(ModelAnalysisError):
             RequirementModelAdapter(model_manager=manager, prompt_manager=prompts).analyze(text="内容", evidence=[{"id": "known", "text": "内容"}])
+
+    def test_empty_semantic_round_is_accepted_without_evidence_anchor(self) -> None:
+        runtime = Mock()
+        runtime.generate_structured.return_value = {
+            "modules": [],
+            "functions": [],
+            "linkages": [],
+            "test_points": [],
+            "coverage_report": {"uncovered_evidence_ids": ["known"]},
+        }
+        manager = Mock()
+        manager.execute_with_fallback.side_effect = lambda _task, operation, **_kwargs: operation(runtime, SimpleNamespace(name="fake"))
+        prompts = Mock(); prompts.resolve.return_value = SimpleNamespace(content="JSON")
+
+        result = RequirementModelAdapter(model_manager=manager, prompt_manager=prompts).analyze(
+            text="本轮没有新增测试对象",
+            evidence=[{"id": "known", "text": "一段本轮无需新增对象的证据"}],
+        )
+
+        self.assertEqual(result["modules"], [])
+        self.assertEqual(result["coverage_report"]["uncovered_evidence_ids"], ["known"])
+
+    def test_rephrased_output_with_valid_evidence_references_is_accepted(self) -> None:
+        runtime = Mock()
+        runtime.generate_structured.return_value = {
+            "modules": [{"id": "m1", "name": "Authentication", "evidence_ids": ["known"]}],
+            "functions": [{"id": "f1", "name": "Sign-in", "evidence_ids": ["known"]}],
+            "linkages": [],
+            "test_points": [{"id": "p1", "description": "Happy path", "evidence_ids": ["known"]}],
+        }
+        manager = Mock()
+        manager.execute_with_fallback.side_effect = lambda _task, operation, **_kwargs: operation(runtime, SimpleNamespace(name="fake"))
+        prompts = Mock(); prompts.resolve.return_value = SimpleNamespace(content="JSON")
+
+        result = RequirementModelAdapter(model_manager=manager, prompt_manager=prompts).analyze(
+            text="用户登录系统",
+            evidence=[{"id": "known", "text": "用户登录系统"}],
+        )
+
+        self.assertEqual(result["test_points"][0]["evidence_ids"], ["known"])
 
     def test_unrelated_model_output_is_rejected(self) -> None:
         runtime = Mock()

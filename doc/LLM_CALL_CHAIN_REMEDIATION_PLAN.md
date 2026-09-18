@@ -1,6 +1,6 @@
 # AITS 模型调用全链路整改开发计划
 
-状态：整改计划执行中。T151-T159 已完成，T155A 已完成共享长结构化运行时，未修改远程部署。
+状态：整改计划执行中。T145/T146 已补齐目标运行身份、目标网络预检、目标后端真实短调用和本地/前端专项证据；T151-T159 已有代码、专项测试和本地闭环记录；T155C 真实调用已成功但结果待人工审核；T160 未开始，未修改远程部署。
 
 日期：2026-09-09（Asia/Shanghai）
 
@@ -111,9 +111,8 @@ T155B 补充需求分析结果的可重复性与覆盖完整性：结构合法�
 9. HTTP 200/201 只代表传输层成功；每个任务必须同时验证业务语义、持久化/副作用、浏览器 Console/Network、边界场景、权限、失败恢复和幂等性。存在未解释的控制台错误、关键网络错误或未覆盖边界时不得标记完成。
 10. T155A 必须先于 T155/T155B/T156 的长内容实现完成；单次 `max_tokens` 提高、供应商返回 200 或解析出一份 JSON，均不能替代分段计划、续接、确定性合并、部分状态和调用方回归。
 
-## 7. 首个开发任务建议
+## 7. 当前执行台账
 
-建议的下一任务为 T155A。T155 的局部 JSON/测试方式修复可以保留，但长输入/长结构化问题位于共享运行时；先修共享能力可避免需求分析、用例生成、评审、报告和智能体继续分叉，后续重复返工。
+T145/T146、T151-T155B、T157-T159、T161 已完成代码/专项测试/本地闭环记录及对应目标证据；T155C 为“真实调用成功、结果待人工审核”；T156 为“基础闭环完成、后续整改已纳入阶段27前六项”；T160 保持未开始。T145/T146 目标服务器 backend、Celery Worker、Beat 均已按 `appuser` 运行身份完成只读核验，目标后端已完成一次明确授权的最小短调用；阶段27第 6 项已完成权限、状态和依赖台账核对，报告后等待用户验收；未授权新的真实供应商调用和远程部署继续冻结。
 
-T155A、T155、T155B、T156、T157 已完成并通过两轮测试；当前按门禁进入 T158，远程部署继续冻结。
-T159 completion note (2026-09-14): shared model execution now records bounded, sanitized route/capability/status/timing/failure/cost-state diagnostics, and the administrator workbench displays actionable records. T160 is the next gated task; remote deployment remains frozen.
+T159 completion note (2026-09-14): shared model execution records bounded, sanitized route/capability/status/timing/failure/cost-state diagnostics, and the administrator workbench displays actionable records. This evidence does not replace T160's final compatibility and real-acceptance gate.

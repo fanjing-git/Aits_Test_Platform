@@ -8,17 +8,20 @@ from typing import Any
 
 from django.db import transaction
 
+from core.task_state import CancelCheck, ProgressCallback
 from apps.configs.models import ModelRoutingPolicy
 from apps.configs.routing import ModelRouteError, ModelRouteResolver
 from apps.requirement_analysis.limits import requirement_document_max_bytes
 from apps.requirement_analysis.llm_adapter import ModelAnalysisError, RequirementModelAdapter
 from apps.requirement_analysis.models import RequirementAnalysis, RequirementDocument
+from apps.requirement_analysis.rounds import ROUND_COUNT, ROUND_DEFINITIONS, run_five_round_analysis
 from apps.requirement_analysis.stability import (
     analysis_baseline,
     assess_quality,
     build_analysis_fingerprint,
     build_source_fingerprint,
     count_payload,
+    analysis_review_state,
 )
 
 
@@ -115,6 +118,9 @@ def _previous_analysis_baseline(document: RequirementDocument) -> dict[str, Any]
         }
     if isinstance(document.analysis_baseline, dict) and document.analysis_baseline:
         baseline = dict(document.analysis_baseline)
+        baseline.pop("_task_runtime", None)
+        baseline.pop("_task_rounds", None)
+        baseline.pop("_last_task_runtime", None)
         baseline["baseline_source"] = "cleared_analysis"
         return baseline
     return None
@@ -149,6 +155,14 @@ def _apply_quality_metadata(
         "analysis_comparison": quality["comparison"],
         "needs_confirmation": quality["needs_confirmation"],
     })
+    coverage["manual_confirmation"] = {
+        "confirmed": False,
+        "reviewed_test_point_ids": [],
+        "reviewed_evidence_ids": [],
+        "reviewed_analysis_item_ids": [],
+        "reviewed_conflict_ids": [],
+    }
+    coverage.update(analysis_review_state(quality["quality_status"], coverage))
     analysis_fingerprint = build_analysis_fingerprint(source_fingerprint, coverage)
     coverage["fingerprints"] = {
         "source": source_fingerprint,
@@ -202,17 +216,17 @@ def _function_test_points(function: dict[str, Any], start: int, *, evidence_ids:
     name = function["name"]
     function_id = function["id"]
     cases = [
-        ("positive", "正常流程", "验证功能按需求完成并给出可确认结果"),
-        ("negative", "输入校验", "验证缺少必填项、格式错误或非法值时给出明确提示"),
-        ("negative", "权限拒绝", "验证未授权角色无法执行该功能且不泄露受限数据"),
-        ("negative", "依赖失败", "验证依赖服务超时或返回错误时能安全失败并保留可重试状态"),
-        ("boundary", "边界值", "验证最小值、最大值、空集合和超长输入均有明确处理"),
-        ("boundary", "重复提交", "验证连续点击、刷新或重复请求不会造成重复数据或重复扣减"),
-        ("boundary", "状态恢复", "验证中断、网络恢复和重新进入页面后状态与结果保持一致"),
+        ("positive", "正常流程", "equivalence_class", "验证功能按需求完成并给出可确认结果"),
+        ("negative", "输入校验", "error_guessing", "验证缺少必填项、格式错误或非法值时给出明确提示"),
+        ("negative", "权限拒绝", "security", "验证未授权角色无法执行该功能且不泄露受限数据"),
+        ("negative", "依赖失败", "error_guessing", "验证依赖服务超时或返回错误时能安全失败并保留可重试状态"),
+        ("boundary", "边界值", "boundary_value", "验证最小值、最大值、空集合和超长输入均有明确处理"),
+        ("boundary", "重复提交", "state_transition", "验证连续点击、刷新或重复请求不会造成重复数据或重复扣减"),
+        ("boundary", "状态恢复", "state_transition", "验证中断、网络恢复和重新进入页面后状态与结果保持一致"),
     ]
     return [
-        {"id": f"test-point-{start + index}", "function_id": function_id, "type": kind, "scenario": scenario, "description": f"{description}：{name}", "evidence_ids": evidence_ids or [], "needs_confirmation": needs_confirmation}
-        for index, (kind, scenario, description) in enumerate(cases)
+        {"id": f"test-point-{start + index}", "function_id": function_id, "type": kind, "test_design_method": method, "scenario": scenario, "description": f"{description}：{name}", "evidence_ids": evidence_ids or [], "needs_confirmation": needs_confirmation}
+        for index, (kind, scenario, method, description) in enumerate(cases)
     ]
 
 
@@ -308,8 +322,16 @@ def analyze_requirement_document(
     document: RequirementDocument,
     *,
     preferred_model_name: str | None = None,
+    resume_from_round: int = 1,
+    progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> RequirementAnalysis:
-    """Analyze a parsed document and persist a new immutable result."""
+    """Analyze a parsed document and persist a new immutable result.
+
+    Configured models run T155C's five semantic rounds. When no compatible
+    model is configured, the historical deterministic baseline remains available
+    but is explicitly marked as not having completed the five model rounds.
+    """
     if not document.content_text.strip():
         raise RequirementAnalysisError("需求文档尚未解析出正文。")
     document.status = RequirementDocument.Status.ANALYZING
@@ -340,15 +362,25 @@ def analyze_requirement_document(
         if model_available:
             try:
                 image_bytes, image_mime_type = _screenshot_payload(document)
-                model_payload = RequirementModelAdapter().analyze(
+                prior_analysis = document.analyses.order_by("-created_at").first() if int(resume_from_round) > 1 else None
+                if int(resume_from_round) > 1 and prior_analysis is None:
+                    raise RequirementAnalysisError("没有可恢复的历史轮次，请从第 1 轮重新开始。", code="invalid_resume")
+                model_payload = run_five_round_analysis(
                     text=document.content_text,
                     evidence=evidence,
                     project_name=document.project.name,
-                    task_type="screenshot" if document.source_type == RequirementDocument.SourceType.SCREENSHOT else "requirement_analysis",
-                    scene_type="screenshot_analysis" if document.source_type == RequirementDocument.SourceType.SCREENSHOT else "requirement_analysis",
                     preferred_model_name=preferred_model_name,
-                    image_bytes=image_bytes,
-                    image_mime_type=image_mime_type,
+                    adapter=RequirementModelAdapter(),
+                    resume_round=int(resume_from_round),
+                    prior_payload={
+                        "modules": prior_analysis.modules,
+                        "functions": prior_analysis.functions,
+                        "linkages": prior_analysis.linkages,
+                        "test_points": prior_analysis.test_points,
+                    } if prior_analysis else None,
+                    prior_rounds=(prior_analysis.coverage_report or {}).get("rounds", []) if prior_analysis else (),
+                    progress_callback=progress_callback,
+                    cancel_check=cancel_check,
                 )
                 coverage = {
                     **(model_payload.get("coverage_report") or {}),
@@ -364,10 +396,11 @@ def analyze_requirement_document(
                 result = DeepAnalysis(model_payload["modules"], model_payload["functions"], model_payload["linkages"], model_payload["test_points"], coverage)
             except ModelAnalysisError as exc:
                 partial = exc.partial_payload if isinstance(exc.partial_payload, dict) else {}
+                structured_partial = partial.get("coverage_report", {}).get("structured_generation", {}) if isinstance(partial.get("coverage_report"), dict) else {}
                 has_partial_items = any(
-                    isinstance(partial.get(key), list)
+                    isinstance(partial.get(key), list) and bool(partial.get(key))
                     for key in ("modules", "functions", "linkages", "test_points")
-                )
+                ) or int(structured_partial.get("completed_segments", 0) or 0) > 0
                 if has_partial_items or exc.structured_trace or exc.code:
                     partial_coverage = {
                         **(partial.get("coverage_report") or {}),
@@ -388,9 +421,16 @@ def analyze_requirement_document(
                         partial_coverage["model_status"] = "failed"
                         partial_coverage["partial_result"] = False
                         structured_generation = partial_coverage.get("structured_generation")
-                        if isinstance(structured_generation, dict):
-                            structured_generation["status"] = "failed"
-                            structured_generation["error_code"] = exc.code
+                        if not isinstance(structured_generation, dict):
+                            structured_generation = {
+                                "status": "failed",
+                                "segment_count": 1,
+                                "completed_segments": 0,
+                                "segments": list(exc.structured_trace),
+                            }
+                            partial_coverage["structured_generation"] = structured_generation
+                        structured_generation["status"] = "failed"
+                        structured_generation["error_code"] = exc.code
                     partial_payload = {
                         "modules": partial.get("modules") if isinstance(partial.get("modules"), list) else [],
                         "functions": partial.get("functions") if isinstance(partial.get("functions"), list) else [],
@@ -430,6 +470,25 @@ def analyze_requirement_document(
                 "model_status": "not_configured",
                 "call_stage": "screenshot_analysis" if document.source_type == RequirementDocument.SourceType.SCREENSHOT else "requirement_analysis",
                 "model_route": route.as_dict(),
+                "round_count": ROUND_COUNT,
+                "completed_rounds": 0,
+                "round_execution_status": "not_configured",
+                "round_progress": {"current_round": 0, "total_rounds": ROUND_COUNT, "status": "not_configured"},
+                "rounds": [
+                    {
+                        "round": index,
+                        "name": definition["name"],
+                        "focus": definition["focus"],
+                        "status": "blocked",
+                        "failure_reason": "未配置可用模型，未执行语义复核轮次。",
+                        "added": 0,
+                        "updated": 0,
+                        "duplicate": 0,
+                        "conflict": 0,
+                        "calls": 0,
+                    }
+                    for index, definition in enumerate(ROUND_DEFINITIONS, start=1)
+                ],
             })
         analysis_payload = result.as_dict()
         source_fingerprint, analysis_fingerprint, quality_status = _apply_quality_metadata(

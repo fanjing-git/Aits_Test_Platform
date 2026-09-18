@@ -8,6 +8,7 @@ from typing import Any
 
 from apps.configs.models import ModelConfig, PromptConfig
 from apps.case_generation.models import CaseGenerationRecord
+from apps.case_generation.design_methods import design_method_label, legacy_case_type, normalize_design_method
 from apps.requirement_analysis.llm_adapter import ModelAnalysisError, RequirementModelAdapter
 from core.llm.structured_runtime import StructuredSegment, plan_structured_segments
 
@@ -19,6 +20,8 @@ def _json_scope_segments(
     max_items: int,
     *,
     collection_key: str,
+    unreferenced_evidence_limit: int | None = None,
+    max_collection_items: int | None = None,
 ) -> tuple[StructuredSegment, ...]:
     """Split a generation/review JSON scope by stable business items."""
     try:
@@ -31,7 +34,8 @@ def _json_scope_segments(
     if not items:
         return (StructuredSegment("segment-0001", text, tuple(evidence)),)
     chunks: list[list[Mapping[str, Any]]] = []
-    chunk_size = max(1, min(max_items, len(items)))
+    requested_items = max_collection_items if max_collection_items is not None else max_items
+    chunk_size = max(1, min(requested_items, len(items)))
     while True:
         chunks = [items[start : start + chunk_size] for start in range(0, len(items), chunk_size)]
         if all(len(json.dumps({**scope, collection_key: chunk}, ensure_ascii=False, default=str)) <= max_input_chars for chunk in chunks):
@@ -65,7 +69,14 @@ def _json_scope_segments(
         references = set()
         for item in chunk:
             references.update(str(value) for value in item.get("evidence_ids", []) if value)
-        bounded_evidence = tuple(item for item in evidence if not references or str(item.get("id")) in references)
+        if references:
+            bounded_evidence = tuple(item for item in evidence if str(item.get("id")) in references)
+        elif unreferenced_evidence_limit == 0:
+            bounded_evidence = ()
+        elif unreferenced_evidence_limit is not None:
+            bounded_evidence = tuple(evidence[:max(0, unreferenced_evidence_limit)])
+        else:
+            bounded_evidence = tuple(evidence)
         result.append(StructuredSegment(f"segment-{index:04d}", json.dumps(bounded, ensure_ascii=False), bounded_evidence))
     return tuple(result)
 
@@ -100,25 +111,33 @@ class CaseGenerationModelAdapter:
             if not isinstance(item, Mapping):
                 raise ModelAnalysisError("模型用例格式无效。")
             source_id = str(item.get("source_function_id", ""))
-            case_type = str(item.get("type", "")).strip()
+            raw_case_type = str(item.get("type", "")).strip()
+            raw_design_method = str(item.get("test_design_method") or item.get("design_method") or "").strip()
+            design_method = normalize_design_method(raw_design_method or raw_case_type, default="")
+            case_type = legacy_case_type(design_method) if design_method else ""
             linkage_id = str(item.get("linkage_id", "")).strip()
             test_point_id = str(item.get("source_test_point_id", "")).strip()
-            if source_id not in function_ids or case_type not in {"positive", "negative", "boundary", "linkage"}:
+            if source_id not in function_ids or not design_method or case_type not in {"positive", "negative", "boundary", "linkage"}:
                 raise ModelAnalysisError("模型用例缺少有效来源或类型。")
             if case_type == "linkage" and linkage_id and linkage_id not in linkage_ids:
                 raise ModelAnalysisError("模型用例引用了不存在的联合场景。")
             if test_point_id and test_point_ids is not None and test_point_id not in test_point_ids:
                 raise ModelAnalysisError("模型用例引用了不存在的测试点。")
+            if test_point_ids and not test_point_id:
+                raise ModelAnalysisError("模型用例缺少来源测试点。")
             if not item.get("title") or not isinstance(item.get("steps"), list) or not item.get("steps") or not item.get("expected_result"):
                 raise ModelAnalysisError("模型用例缺少标题、步骤或预期结果。")
             normalized = dict(item)
             normalized["source_function_id"] = source_id
             normalized["type"] = case_type
+            normalized["test_design_method"] = design_method
+            normalized["test_design_method_label"] = design_method_label(design_method)
             normalized["steps"] = [str(step).strip() for step in item["steps"] if str(step).strip()]
             normalized["expected_result"] = str(item["expected_result"]).strip()
             normalized["title"] = str(item["title"]).strip()
             normalized["linkage_id"] = linkage_id or None
             normalized["source_test_point_id"] = test_point_id or None
+            normalized["scenario_key"] = str(item.get("scenario_key") or "").strip() or None
             validated.append(normalized)
         return {
             "cases": validated,
@@ -134,6 +153,7 @@ class CaseGenerationModelAdapter:
         modules: Sequence[Mapping[str, Any]],
         functions: Sequence[Mapping[str, Any]],
         test_points: Sequence[Mapping[str, Any]],
+        coverage_plan: Sequence[Mapping[str, Any]] = (),
         linkages: Sequence[Mapping[str, Any]],
         existing_cases: Sequence[Mapping[str, Any]],
         evidence: Sequence[Mapping[str, Any]],
@@ -149,14 +169,18 @@ class CaseGenerationModelAdapter:
             "modules": list(modules),
             "functions": list(functions),
             "test_points": list(test_points),
+            "coverage_plan": list(coverage_plan),
             "linkages": list(linkages),
             "existing_cases": list(existing_cases),
         }
         instruction = (
             "你正在对同一份需求执行第 %d 轮递进式测试用例分析。%s "
-            "需求分析结果和已有用例是输入上下文；不要重复已有用例，不要把五轮当成五次独立生成。 "
+            "需求分析结果、动态覆盖计划和已有用例是输入上下文；不要重复已有用例，不要把五轮当成五次独立生成。 "
+            "coverage_plan 是每个测试点必须覆盖的最低测试设计维度，不是用例数量上限；如果需求包含多个独立规则、数据分支或风险，必须继续补充不同 scenario_key 的场景，直到风险和维度覆盖完整，禁止只为凑数量生成同义改写。 "
             "只输出 JSON：{\"round_analysis\":{...},\"cases\":[...],\"coverage_report\":{...}}。round_analysis 必须说明本轮复核的需求风险、已覆盖测试点和仍待覆盖的缺口。每个新增用例必须包含 "
-            "source_function_id、source_test_point_id、type、title、steps、expected_result、priority、automatable；"
+            "source_function_id、source_test_point_id、scenario_key、type、test_design_method、title、steps、expected_result、priority、automatable；"
+            "scenario_key 是同一测试点和测试设计方法下的稳定场景键；若已有用例表达的是同一场景，必须复用已有 scenario_key，不要因措辞变化新建重复用例；"
+            "test_design_method 必须使用 positive_flow、equivalence_class、boundary_value、error_guessing、cause_effect_graph、state_transition、security、performance、linkage 或 regression_compatibility；"
             "source_function_id 必须来自 functions，linkage_id 必须来自 linkages。"
         ) % (round_number, self.ROUND_INSTRUCTIONS[round_number])
         function_ids = {str(item.get("id")) for item in functions}
@@ -315,7 +339,8 @@ class CaseReviewModelAdapter:
             "issues is an array; each issue has id, code, case_id (empty for requirement-level issues), severity "
             "(high/medium/low), dimension, description, suggestion, and evidence_ids. corrections is an array; "
             "its field must be one of title, steps, expected_result, priority, or type. Use only supplied case IDs "
-            "and evidence IDs; never invent cases. This is review round %d of five; inspect existing findings and return only new findings or corrections. "
+            "and evidence IDs; never invent cases. The supplied cases are only the current segment: review only those cases "
+            "and do not repeat findings already present in existing_issues. This is review round %d of five; return only new findings or corrections. "
             "approved is true only when no high or medium issue exists."
         ) % round_number
         return self.adapter.run(
@@ -334,6 +359,13 @@ class CaseReviewModelAdapter:
                 max_chars,
                 max_items,
                 collection_key="cases",
+                # Generated cases usually have no evidence_ids of their own.
+                # Keep a small bounded context for grounding, but do not
+                # repeat the complete requirement evidence in every segment.
+                unreferenced_evidence_limit=8,
+                # This protects review response size only; it is not a cap on
+                # the number of cases that generation may produce.
+                max_collection_items=min(max_items, 12),
             ),
         )
 

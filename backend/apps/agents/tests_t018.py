@@ -7,6 +7,7 @@ from rest_framework.test import APITestCase
 from apps.agents.models import Agent
 from apps.configs.models import ModelConfig, PromptConfig
 from apps.projects.models import Project, ProjectMember
+from apps.users.models import UserProfile
 
 
 class AgentApiTests(APITestCase):
@@ -17,6 +18,13 @@ class AgentApiTests(APITestCase):
         self.member = users.objects.create_user(username="agent-api-member")
         self.outsider = users.objects.create_user(username="agent-api-outsider")
         self.admin = users.objects.create_user(username="agent-api-admin")
+        for user, platform_role in (
+            (self.owner, UserProfile.Role.TEST_LEADER),
+            (self.manager, UserProfile.Role.TEST_LEADER),
+            (self.member, UserProfile.Role.TESTER),
+        ):
+            user.profile.role = platform_role
+            user.profile.save(update_fields=("role",))
         self.admin.profile.role = "admin"
         self.admin.profile.save(update_fields=["role"])
         self.project = Project.objects.create(name="Agent API Project", created_by=self.owner)

@@ -13,6 +13,26 @@ COUNT_FIELDS = ("modules", "functions", "linkages", "test_points")
 TEST_POINT_TYPES = {"positive", "negative", "boundary", "security", "linkage", "performance"}
 
 
+def analysis_review_state(quality_status: str, coverage_report: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Return the explicit analysis, manual-review, and generation gate state."""
+    report = coverage_report if isinstance(coverage_report, Mapping) else {}
+    confirmation = report.get("manual_confirmation") if isinstance(report.get("manual_confirmation"), Mapping) else {}
+    analysis_complete = str(quality_status) == "complete"
+    manual_review_complete = analysis_complete and bool(confirmation.get("confirmed"))
+    if manual_review_complete:
+        manual_review_status = "confirmed"
+    elif str(quality_status) in {"partial", "failed"}:
+        manual_review_status = "blocked"
+    else:
+        manual_review_status = "pending"
+    return {
+        "analysis_complete": analysis_complete,
+        "manual_review_status": manual_review_status,
+        "manual_review_complete": manual_review_complete,
+        "generation_allowed": manual_review_complete,
+    }
+
+
 def analysis_mapping_gaps(payload: Mapping[str, Any]) -> dict[str, list[str]]:
     """Find broken module/function/test-point relationships in an analysis."""
     modules = payload.get("modules") if isinstance(payload.get("modules"), list) else []
@@ -222,12 +242,16 @@ def assess_quality(
     counts = count_payload(payload)
     comparison = compare_counts(counts, previous_baseline)
     mapping_gaps = analysis_mapping_gaps(payload)
+    conflicts = coverage_report.get("conflicts") if isinstance(coverage_report.get("conflicts"), list) else []
     uncovered_ids = sorted(evidence_ids - covered_ids)
     has_inventory = bool(evidence_ids)
     coverage_ratio = round(len(covered_ids) / max(1, len(evidence_ids)), 4) if has_inventory else 0.0
     if structured_status != "completed":
         quality_status = "partial"
         reason = "存在未完成或失败的结构化分段。"
+    elif conflicts:
+        quality_status = "needs_review"
+        reason = f"五轮递进合并发现{len(conflicts)}项语义冲突，已保留既有值并进入人工复核。"
     elif mapping_gaps:
         quality_status = "needs_review"
         reason = "最终分析结果存在模块/功能点归属、名称、测试点描述或测试类型缺失，不能进入用例生成。"
@@ -269,6 +293,7 @@ __all__ = [
     "COUNT_FIELDS",
     "TEST_POINT_TYPES",
     "analysis_mapping_gaps",
+    "analysis_review_state",
     "analysis_baseline",
     "assess_quality",
     "build_analysis_fingerprint",

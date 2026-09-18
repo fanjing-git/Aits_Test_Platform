@@ -32,6 +32,8 @@ class CaseSelectionTests(TestCase):
         project = Project.objects.create(name="Case selector project", created_by=user)
         document = RequirementDocument.objects.create(project=project, title="Login", content_text="用户可以登录系统。", created_by=user)
         analysis = analyze_requirement_document(document)
+        analysis.coverage_report = {**analysis.coverage_report, "manual_confirmation": {"confirmed": True}}
+        analysis.save(update_fields=("coverage_report",))
         record = generate_document_cases(document, analysis)
         review_generation_record(record)
         updated = select_generation_record(record)

@@ -16,6 +16,7 @@ from apps.projects.models import Project
 from apps.requirement_analysis.analyzer import analyze_requirement_document
 from apps.requirement_analysis.llm_adapter import ModelAnalysisError, RequirementModelAdapter
 from apps.requirement_analysis.models import RequirementAnalysis, RequirementDocument
+from apps.users.models import UserProfile
 
 
 class VisualRuntimeT155Tests(SimpleTestCase):
@@ -76,6 +77,8 @@ class RequirementAnalysisT155Tests(TestCase):
     def setUp(self) -> None:
         self.client = APIClient()
         self.owner = get_user_model().objects.create_user(username="t155-owner")
+        self.owner.profile.role = UserProfile.Role.TEST_LEADER
+        self.owner.profile.save(update_fields=("role",))
         self.project = Project.objects.create(name="T155 project", created_by=self.owner)
         self.document = RequirementDocument.objects.create(
             project=self.project,

@@ -24,6 +24,36 @@ class CaseGenerationTests(TestCase):
         self.assertEqual(result.coverage_report["coverage_rate"], 1.0)
         self.assertEqual({item["type"] for item in result.cases}, {"positive", "negative", "boundary", "linkage"})
 
+    def test_coverage_metrics_split_evidence_function_dimension_and_linkage(self) -> None:
+        payload = {
+            "modules": [{"id": "module-account", "name": "账户"}],
+            "functions": [
+                {"id": "function-login", "module_id": "module-account", "name": "登录", "evidence_ids": ["e1"]},
+                {"id": "function-order", "module_id": "module-account", "name": "订单", "evidence_ids": ["e1"]},
+            ],
+            "linkages": [{"id": "link-login-order", "from": "function-login", "to": "function-order", "evidence_ids": ["e1"]}],
+            "test_points": [
+                {"id": "point-login", "function_id": "function-login", "type": "positive", "evidence_ids": ["e1"]},
+                {"id": "point-order", "function_id": "function-order", "type": "linkage", "scenario_id": "link-login-order", "evidence_ids": ["e1"]},
+            ],
+        }
+        result = generate_cases(payload, evidence=[{"id": "e1", "text": "登录后展示订单"}])
+        metrics = result.coverage_report["coverage_metrics"]
+
+        self.assertEqual(metrics["evidence"]["rate"], 1.0)
+        self.assertEqual(metrics["function"]["rate"], 1.0)
+        self.assertEqual(metrics["test_dimension"]["rate"], 1.0)
+        self.assertEqual(metrics["linkage"]["rate"], 1.0)
+        self.assertEqual(result.coverage_report["evidence_coverage_rate"], 1.0)
+        self.assertEqual(result.coverage_report["function_coverage_rate"], 1.0)
+        self.assertEqual(result.coverage_report["test_dimension_coverage_rate"], 1.0)
+        self.assertEqual(result.coverage_report["linkage_coverage_rate"], 1.0)
+
+        without_evidence = generate_cases(payload)
+        evidence_metric = without_evidence.coverage_report["coverage_metrics"]["evidence"]
+        self.assertEqual(evidence_metric["status"], "unavailable")
+        self.assertIsNone(evidence_metric["rate"])
+
     def test_missing_functions_fail_safely(self) -> None:
         with self.assertRaises(CaseGenerationError): generate_cases({"functions": []})
 
@@ -52,6 +82,8 @@ class CaseGenerationTests(TestCase):
         project = Project.objects.create(name="Case generator project", created_by=user)
         document = RequirementDocument.objects.create(project=project, title="Order", content_text="# Account\n用户登录。\n# Order\n系统创建订单。", created_by=user)
         analysis = analyze_requirement_document(document)
+        analysis.coverage_report = {**analysis.coverage_report, "manual_confirmation": {"confirmed": True}}
+        analysis.save(update_fields=("coverage_report",))
         identify_document_linkages(analysis)
         record = generate_document_cases(document, analysis)
         self.assertEqual(record.status, CaseGenerationRecord.Status.COMPLETED)
@@ -64,6 +96,8 @@ class CaseGenerationTests(TestCase):
         project = Project.objects.create(name="Case model project", created_by=user)
         document = RequirementDocument.objects.create(project=project, title="Order", content_text="用户登录。", created_by=user)
         analysis = analyze_requirement_document(document)
+        analysis.coverage_report = {**analysis.coverage_report, "manual_confirmation": {"confirmed": True}}
+        analysis.save(update_fields=("coverage_report",))
         model = ModelConfig.objects.create(name="case-fake-chat", provider=ModelConfig.Provider.CUSTOM, model_name="fake", model_type=ModelConfig.ModelType.CHAT)
         ModelRoutingPolicy.objects.create(
             feature_key=ModelRoutingPolicy.FeatureKey.CASE_GENERATION,
@@ -76,11 +110,13 @@ class CaseGenerationTests(TestCase):
         self.assertEqual(record.coverage_report["analysis_method"], "model_verified")
         self.assertTrue(record.cases)
 
-    def test_configured_model_failure_does_not_persist_deterministic_cases(self) -> None:
+    def test_configured_model_failure_keeps_reviewed_scope_with_deterministic_fallback(self) -> None:
         user = get_user_model().objects.create_user(username="case-model-failure-owner")
         project = Project.objects.create(name="Case model failure project", created_by=user)
         document = RequirementDocument.objects.create(project=project, title="Order", content_text="登录", created_by=user)
         analysis = analyze_requirement_document(document)
+        analysis.coverage_report = {**analysis.coverage_report, "manual_confirmation": {"confirmed": True}}
+        analysis.save(update_fields=("coverage_report",))
         model = ModelConfig.objects.create(name="case-failing-chat", provider=ModelConfig.Provider.CUSTOM, model_name="fake", model_type=ModelConfig.ModelType.CHAT)
         ModelRoutingPolicy.objects.create(
             feature_key=ModelRoutingPolicy.FeatureKey.CASE_GENERATION,
@@ -89,8 +125,9 @@ class CaseGenerationTests(TestCase):
         failing = Mock()
         failing.generate.side_effect = ModelAnalysisError("provider unavailable")
         with patch("apps.case_generation.generator.CaseGenerationModelAdapter", return_value=failing):
-            with self.assertRaises(CaseGenerationError):
-                generate_document_cases(document, analysis)
+            record = generate_document_cases(document, analysis)
         record = CaseGenerationRecord.objects.get(document=document)
-        self.assertEqual(record.status, CaseGenerationRecord.Status.FAILED)
-        self.assertEqual(record.total_cases, 0)
+        self.assertEqual(record.status, CaseGenerationRecord.Status.COMPLETED)
+        self.assertGreater(record.total_cases, 0)
+        self.assertEqual(record.coverage_report["analysis_method"], "deterministic_fallback")
+        self.assertIn("model_warning", record.coverage_report)

@@ -21,6 +21,8 @@ class RequirementAnalysisApiTests(TestCase):
         self.owner = User.objects.create_user(username="t094-owner")
         self.viewer = User.objects.create_user(username="t094-viewer")
         self.outsider = User.objects.create_user(username="t094-outsider")
+        self.owner.profile.role = UserProfile.Role.TEST_LEADER
+        self.owner.profile.save(update_fields=("role",))
         self.project = Project.objects.create(name="T094 project", created_by=self.owner)
         ProjectMember.objects.create(project=self.project, user=self.viewer, role=ProjectMember.Role.VIEWER)
         self.url = "/api/requirement-documents/"
