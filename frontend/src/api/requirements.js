@@ -18,4 +18,6 @@ export const identifyRequirementLinkages = (id) => request.post(`/api/requiremen
 export const clearRequirementAnalysis = (id) => request.post(`/api/requirement-documents/${id}/clear-analysis/`)
 export const confirmRequirementAnalysis = (id, payload = {}) => request.post(`/api/requirement-documents/${id}/confirm-analysis/`, payload)
 export const reviewRequirementTestPoints = (id, payload = {}) => request.post(`/api/requirement-documents/${id}/review-test-points/`, payload)
+export const reviewRequirementDocument = (id) => request.post(`/api/requirement-documents/${id}/review-requirement/`)
+export const decomposeRequirementDocument = (id) => request.post(`/api/requirement-documents/${id}/decompose-requirement/`)
 export const analyzeRequirementScreenshot = (id, payload = {}) => request.post(`/api/requirement-documents/${id}/screenshot-analysis/`, payload, { timeout: STRUCTURED_ANALYSIS_TIMEOUT })

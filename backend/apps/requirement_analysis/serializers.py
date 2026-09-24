@@ -27,7 +27,9 @@ class RequirementAnalysisSerializer(serializers.ModelSerializer):
             "id", "document", "document_title", "modules", "functions", "linkages",
             "test_points", "coverage_report", "source_fingerprint", "analysis_fingerprint",
             "quality_status", "analysis_complete", "manual_review_status", "manual_review_complete",
-            "generation_allowed", "created_at",
+            "generation_allowed", "review_status", "review_report", "review_run",
+            "decomposition_status", "decomposition", "decomposition_fingerprint",
+            "decomposition_run", "created_at",
         )
         read_only_fields = fields
 
@@ -92,11 +94,11 @@ class RequirementDocumentSerializer(serializers.ModelSerializer):
             "id", "project", "project_name", "title", "version", "source_type",
             "source_type_label", "source_url", "content_text", "status", "status_label",
             "parse_evidence", "parse_confidence", "parse_warnings", "visual_analysis_report",
-            "latest_analysis", "file", "created_by", "created_at",
+            "latest_analysis", "analysis_run", "file", "created_by", "created_at",
         )
         read_only_fields = (
             "id", "status", "status_label", "parse_evidence", "parse_confidence", "parse_warnings",
-            "visual_analysis_report", "latest_analysis", "created_by", "created_at",
+            "visual_analysis_report", "latest_analysis", "analysis_run", "created_by", "created_at",
         )
         extra_kwargs = {"content_text": {"required": False, "allow_blank": True}}
 

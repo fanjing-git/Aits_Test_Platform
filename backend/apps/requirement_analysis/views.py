@@ -26,6 +26,7 @@ from apps.requirement_analysis.serializers import RequirementAnalysisConfirmatio
 from apps.requirement_analysis.screenshot_analyzer import analyze_screenshot_file
 from apps.requirement_analysis.services import RequirementAnalysisConfirmationError, RequirementAnalysisRecordService
 from apps.requirement_analysis.tasks import run_requirement_analysis, set_requirement_runtime
+from apps.skills.business_execution import BusinessSkillRunError, BusinessSkillRunService, business_skill_execution
 from apps.skills.orchestration import SkillExecutionService
 
 
@@ -88,6 +89,86 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
             raise ValidationError({"detail": str(exc)}) from exc
         document.refresh_from_db()
         return Response(self.get_serializer(document).data)
+
+    @action(detail=True, methods=("post",), url_path="review-requirement")
+    def review_requirement(self, request, pk=None):
+        """Execute the independent requirement-review Skill on the latest version."""
+        document = self.get_object()
+        self._require_manager(document)
+        analysis = document.analyses.order_by("-created_at").first()
+        if analysis is None:
+            raise ValidationError({"detail": "请先完成需求分析。"})
+        service = BusinessSkillRunService()
+        try:
+            run = service.start(
+                user=request.user,
+                project_id=document.project_id,
+                workflow_key="requirement_review",
+                operation="requirement_review",
+                business_type="requirement_analysis",
+                business_id=analysis.pk,
+                input_snapshot={"document_id": str(document.pk), "analysis_id": str(analysis.pk), "analysis_fingerprint": analysis.analysis_fingerprint},
+                node_id="requirement_review",
+                skill_name="需求评审",
+            )
+            service.mark_running(run, "requirement_review")
+            reviewed = RequirementAnalysisRecordService().review_latest_analysis(document)
+            reviewed.review_run = run
+            reviewed.save(update_fields=("review_run",))
+            if reviewed.review_status != RequirementAnalysis.StageStatus.PASSED:
+                raise RequirementAnalysisConfirmationError("需求评审未通过，请先修复结构映射或验收条件问题。")
+            service.complete(run, "requirement_review", {
+                "analysis_id": str(reviewed.pk), "review_status": reviewed.review_status,
+                "issue_count": len((reviewed.review_report or {}).get("issues", [])),
+            }, artifact_ref={"type": "requirement_review", "id": str(reviewed.pk)})
+        except (BusinessSkillRunError, RequirementAnalysisConfirmationError) as exc:
+            if "run" in locals():
+                service.fail(run, "requirement_review", "review_failed", str(exc))
+            raise ValidationError({"detail": str(exc)}) from exc
+        document.refresh_from_db()
+        payload = self.get_serializer(document).data
+        payload["skill_execution"] = business_skill_execution(run, "需求评审")
+        return Response(payload)
+
+    @action(detail=True, methods=("post",), url_path="decompose-requirement")
+    def decompose_requirement(self, request, pk=None):
+        """Execute requirement decomposition only after the review gate passes."""
+        document = self.get_object()
+        self._require_manager(document)
+        analysis = document.analyses.order_by("-created_at").first()
+        if analysis is None:
+            raise ValidationError({"detail": "请先完成需求分析和需求评审。"})
+        service = BusinessSkillRunService()
+        try:
+            run = service.start(
+                user=request.user,
+                project_id=document.project_id,
+                workflow_key="requirement_decomposition",
+                operation="requirement_decomposition",
+                business_type="requirement_analysis",
+                business_id=analysis.pk,
+                input_snapshot={"document_id": str(document.pk), "analysis_id": str(analysis.pk), "review_run_id": str(analysis.review_run_id or "")},
+                node_id="requirement_decomposition",
+                skill_name="需求拆解",
+            )
+            service.mark_running(run, "requirement_decomposition")
+            decomposed = RequirementAnalysisRecordService().decompose_reviewed_analysis(document)
+            decomposed.decomposition_run = run
+            decomposed.save(update_fields=("decomposition_run",))
+            service.complete(run, "requirement_decomposition", {
+                "analysis_id": str(decomposed.pk), "decomposition_status": decomposed.decomposition_status,
+                "module_count": len((decomposed.decomposition or {}).get("modules", [])),
+                "function_count": len((decomposed.decomposition or {}).get("functions", [])),
+                "flow_count": len((decomposed.decomposition or {}).get("business_flows", [])),
+            }, artifact_ref={"type": "requirement_decomposition", "id": str(decomposed.pk)})
+        except (BusinessSkillRunError, RequirementAnalysisConfirmationError) as exc:
+            if "run" in locals():
+                service.fail(run, "requirement_decomposition", "decomposition_failed", str(exc))
+            raise ValidationError({"detail": str(exc)}) from exc
+        document.refresh_from_db()
+        payload = self.get_serializer(document).data
+        payload["skill_execution"] = business_skill_execution(run, "需求拆解")
+        return Response(payload)
 
     @action(detail=True, methods=("post",), url_path="review-test-points")
     def review_test_points(self, request, pk=None):
@@ -186,12 +267,14 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
             parse_requirement_document(document)
         except DocumentParseError as exc:
             raise ValidationError({"detail": str(exc)}) from exc
-        skill = SkillExecutionService().execute(
-            "requirement_analysis",
-            {"user_input": document.content_text or document.title, "project_id": str(document.project_id)},
-        )
         data = self.get_serializer(document).data
-        data["skill_execution"] = skill.as_dict() if skill else None
+        data["skill_execution"] = {
+            "skill": "需求分析",
+            "version": "1.0.0",
+            "status": "completed",
+            "runtime": "document_parser",
+            "message": "需求原文已解析；尚未启动需求分析业务父运行。",
+        }
         return Response(data)
 
     @action(detail=True, methods=("post",))
@@ -215,6 +298,28 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
         current_runtime = (document.analysis_baseline or {}).get("_task_runtime")
         if isinstance(current_runtime, dict) and current_runtime.get("status") in {"pending", "running", "cancel_requested"}:
             return Response({"detail": "当前需求分析任务仍在处理中，请等待完成或先取消。", "task_runtime": current_runtime}, status=status.HTTP_409_CONFLICT)
+        try:
+            business_run = BusinessSkillRunService().start(
+                user=request.user,
+                project_id=document.project_id,
+                workflow_key="requirement_analysis",
+                operation="requirement_analysis",
+                business_type="requirement_document",
+                business_id=document.pk,
+                input_snapshot={
+                    "document_id": str(document.pk),
+                    "document_version": document.version,
+                    "source_type": document.source_type,
+                    "resume_from_round": resume_from_round,
+                    "preferred_model_name": preferred_model_name or "",
+                },
+                node_id="requirement_analysis",
+                skill_name="需求分析",
+            )
+        except BusinessSkillRunError as exc:
+            return Response({"detail": str(exc), "code": "business_run_invalid"}, status=status.HTTP_409_CONFLICT)
+        document.analysis_run = business_run
+        document.save(update_fields=("analysis_run",))
         if not settings.CELERY_TASK_ALWAYS_EAGER:
             task_id = uuid4().hex
             runtime = task_runtime(
@@ -228,30 +333,41 @@ class RequirementDocumentViewSet(viewsets.ModelViewSet):
             set_requirement_runtime(document, runtime, status=RequirementDocument.Status.ANALYZING)
             try:
                 run_requirement_analysis.apply_async(
-                    args=[str(document.pk), preferred_model_name, resume_from_round, task_id],
+                    args=[str(document.pk), preferred_model_name, resume_from_round, task_id, str(business_run.pk)],
                     task_id=task_id,
                 )
             except Exception as exc:
                 runtime.update({"status": "failed", "error_code": "task_enqueue_failed", "detail": str(exc)[:200]})
                 set_requirement_runtime(document, runtime, status=RequirementDocument.Status.FAILED)
+                BusinessSkillRunService().fail(business_run, "requirement_analysis", "task_enqueue_failed", "需求分析任务提交失败。")
                 return Response({"detail": "分析任务提交失败，请稍后重试。", "code": "task_enqueue_failed", "task_runtime": runtime}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
             document.refresh_from_db()
-            return Response({"document": self.get_serializer(document).data, "task_runtime": runtime}, status=status.HTTP_202_ACCEPTED)
+            return Response({"document": self.get_serializer(document).data, "task_runtime": runtime, "skill_execution": business_skill_execution(business_run, "需求分析")}, status=status.HTTP_202_ACCEPTED)
         try:
-            analyze_requirement_document(
+            BusinessSkillRunService().mark_running(business_run, "requirement_analysis")
+            analysis = analyze_requirement_document(
                 document,
                 preferred_model_name=preferred_model_name,
                 resume_from_round=resume_from_round,
             )
         except RequirementAnalysisError as exc:
+            BusinessSkillRunService().fail(business_run, "requirement_analysis", exc.code, str(exc))
             return self._analysis_failure_response(document, exc)
-        document.refresh_from_db()
-        skill = SkillExecutionService().execute(
+        BusinessSkillRunService().complete(
+            business_run,
             "requirement_analysis",
-            {"user_input": document.content_text or document.title, "project_id": str(document.project_id)},
+            {
+                "analysis_id": str(analysis.pk),
+                "quality_status": analysis.quality_status,
+                "module_count": len(analysis.modules or []),
+                "function_count": len(analysis.functions or []),
+                "test_point_count": len(analysis.test_points or []),
+            },
+            artifact_ref={"type": "requirement_analysis", "id": str(analysis.pk)},
         )
+        document.refresh_from_db()
         data = self.get_serializer(document).data
-        data["skill_execution"] = skill.as_dict() if skill else None
+        data["skill_execution"] = business_skill_execution(business_run, "需求分析")
         return Response(data)
 
     @action(detail=True, methods=("post",), url_path="cancel-analysis")

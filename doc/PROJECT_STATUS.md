@@ -1,6 +1,234 @@
-﻿# AI 智能体测试平台开发状态
+# AI 智能体测试平台开发状态
 
-Updated: 2026-09-18 (Asia/Shanghai) — 代码开发会话已归档并完成一次远程部署；部署版本 72470e0 已通过服务器侧健康验收；T145/T146 目标环境证据、代码、双轮测试和 MCP 验收完成待用户确认；阶段27第7项 T160 暂缓；T155B 已闭环；T155C 本地真实模型调用已成功但结果待人工审核；阶段29 T167 待 Browser MCP 恢复后开始
+## 续接归档（唯一标记）
+- 唯一标记：AITS-RESUME-20260924-ARCHIVE-T170-UX-NETWORK-9f3a7c21
+- 归档时间：2026-09-24（Asia/Shanghai）。本区块是下次续接的唯一进度锚点；恢复时先核对该完整标记，必须与本文档顶部标记一致。
+- 归档状态：当前开发进度已完成 T170。T168 蓝图生命周期与 T167 配置回归已实现并通过浏览器验收；T169 统一运行时与业务入口整改已实现并通过自动化/浏览器验证；本地模型出网启动整改已获用户验收；T170 需求分析→需求评审→需求拆解 Skill 纵向闭环已实现并获用户验收；分析冲突中文核对体验优化已实现并通过真实浏览器验证，仍作为独立体验改进项保留；T171 测试点拆解/评审与人工测试点审核尚未开始，完整需求到用例父级 DAG 尚未开始。
+- 下次续接指令：用户在新 Codex 会话输入“继续”时，先按项目规则读取完整契约文档链、复核 Git 与本地服务，并核对唯一标记 `AITS-RESUME-20260924-ARCHIVE-T170-UX-NETWORK-9f3a7c21`；确认 T170 已验收后，按任务清单只开发下一任务 T171。网络整改和 T170 不再作为待验收项。不得提交、推送、部署或回滚。
+- 工作区边界：保留当前全部未提交修改及既有未跟踪资料，禁止清理或覆盖；仅开发一个任务。下次启动必须重新检查服务和 Git 状态，不能假定当前进程仍在运行。
+- 凭据边界：登录凭据不写入归档、代码或日志。
+
+Updated: 2026-09-24 (Asia/Shanghai) — 网络整改与 T170 均已获用户验收；当前下一任务为 T171，尚未开始。唯一续接标记保持不变。
+
+## 2026-09-24 分析冲突中文核对体验优化（待用户验收）
+
+- **问题：** 原界面只展示 `same_business_key_different_fields`、`same_id_different_semantics`、模型对象 ID 和一行字段摘要，用户无法理解触发原因、找到对应分析对象或判断勾选动作；与平台中文优先定位不一致。
+- **实现：** 在需求分析工作台增加顶部“发现 N 条分析内容需要核对”提示和“查看并逐条核对”入口；冲突卡片改为中文展示功能模块/功能点/联合场景/测试点、触发解释、之前保留的结果、本轮新结果、来源轮次和已核对进度；技术字段与原始 reason 仅放入可展开的“字段差异和技术来源”详情；明确说明勾选只表示已核对，不会自动采用新结果。
+- **定位与交互：** 点击入口会准确滚动到冲突核对区；每条冲突具备中文无障碍标签、旧值/新值对照和可展开详情；勾选首条真实回读为 `已核对 1 / 30`，未发起无关 API 请求。
+- **第一轮专项测试：** `npm.cmd run build`，Vite 8.2.2、1703 modules 构建通过；`git diff --check` 通过；前端无独立测试脚本。
+- **第二轮真实浏览器集成：** Playwright MCP 管理员真实登录态刷新需求页；页面显示“发现 30 条分析内容需要核对”，中文原因可见、英文 reason 默认不可见；点击入口后冲突区位于视口顶部，首条勾选进度为 1/30，字段详情可展开；最终 Console 0 error / 0 warning。
+- **变更文件：** 修改 `frontend/src/views/RequirementAnalysisView.vue`、`frontend/src/styles/requirements.css`、`doc/PROJECT_STATUS.md`；无后端、迁移、依赖或部署配置变化。
+- **当前边界：** 本次将冲突解释和核对入口中文化，但仍沿用现有“勾选确认”业务语义，未新增“采用新值/合并/标记重复”的持久化决策 API；后续如需真正解决冲突内容，需单独设计冲突决策模型和 REST 闭环。不提交、不推送、不部署、不回滚。
+
+## 2026-09-24 本地模型出网与启动上下文整改（T145/T146 本地遗漏修复，待用户验收）
+
+- **问题根因：** 本机 Python 原生 `socket.create_connection(('api.deepseek.com', 443))` 在 Codex 普通受限上下文稳定返回 `WinError 10013`；`Test-NetConnection` 虽能成功，但不能证明 Django/Python 进程可出网。旧 `start-dev.ps1` 只检查 8000 HTTP 是否可用，普通权限旧 backend 已占端口时会跳过 UAC 重启；同时 Django 自动重载产生父/子 Python 进程，`.runtime/backend.pid` 记录的是 PowerShell 启动器而非真实监听 PID。
+- **整改内容：** `scripts/start-dev.ps1` 默认接管并停止项目自己的 8000 后端进程，使用 `--noreload` 启动单一后端，优先通过 UAC 请求网络权限，启动完成后回写真实监听 PID；增加 `-KeepBackend` 仅用于明确保留当前进程的诊断场景。`.env.example` 增加不含凭据的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 说明；`docker-compose.remote.yml` 将代理变量显式注入 backend、celery_worker、celery_beat，直连时可留空。
+- **第一轮专项验证：** 修复后以放宽网络上下文重启本地服务，旧 PID 8956、16044、22500 和启动器 24508 被清理；新后端真实监听 PID 8920，`--noreload` 生效。提升网络上下文下 Python 通过本机代理 `127.0.0.1:7897` 完成 `api.deepseek.com:443` TCP 连接；前端 5173、后端 8000、`/api/health/` 均 HTTP 200；PowerShell 脚本语法检查、`git diff --check` 通过。当前环境未安装 Docker CLI，未执行 `docker compose config`，远程 Compose 需在目标服务器继续校验。
+- **第二轮真实集成验证：** Playwright MCP 管理员登录态刷新需求页，点击“重试本轮”；`POST /retry-round/` 返回 200，实际模型调用从等待状态完成，页面显示第 5/5 轮、25 次调用、21 个模块、64 个功能点、40 个联合场景、264 个测试点，结果持久化为 `status=analyzed`、`model_status=verified`、`quality_status=needs_review`。Network 回读 200；刷新前后状态一致。唯一 Console error 是会话过期后的预期 `/api/auth/me/` 401，随后 refresh 200；未出现 `local_network_blocked`。
+- **部署边界：** 本次未修改远程服务器。生产环境必须在 backend、Celery worker、Celery beat 的同一运行身份下分别验证 DNS、TCP 443、TLS、代理继承和一次无业务数据短调用；服务器直连可将四个代理变量留空，受限网络则在目标环境 secret/env store 设置代理，不能只配置管理员终端或 frontend。既有 T145/T146 远程验收记录显示目标服务器曾以 `appuser` 直连 DeepSeek 与千问成功，但重新部署时仍需按该清单复核。
+- **变更影响矩阵：**
+
+  | 变更点 | 直接/间接调用方 | 验证证据 | 结果 |
+  | --- | --- | --- | --- |
+  | 本地启动脚本接管/提升/单进程 | Django backend、需求分析真实模型调用 | 重启后真实 PID、Python TCP、Playwright 25 次 DeepSeek 调用 | 通过 |
+  | 代理环境模板 | Docker backend、Celery worker、Celery beat | Compose 配置静态复核；Docker CLI 不可用，目标机待复核 | 本地模板通过，目标机待验收 |
+  | 需求分析失败恢复链路 | 需求工作台、`retry-round` REST、分析持久化 | 失败→重试→5/5 完成、Network 200、刷新回读 | 通过 |
+
+- **当前边界：** 本次只修复本地启动/出网上下文和部署代理继承，不新增业务功能，不提交、不推送、不部署、不回滚。深度分析已恢复真实模型调用，但结果仍需按页面提示完成 30 项冲突人工复核；T171 及后续任务未开始。
+
+## 2026-09-24 T170 需求分析、需求评审与需求拆解 Skill 纵向闭环（用户验收通过）
+
+- **任务边界：** 仅完成 T170 的需求分析、需求评审、需求拆解三个独立业务节点；测试点拆解/人工测试点审核属于 T171，用例生成属于 T172，未提前实现。2026-09-24 已获用户验收通过。
+- **实现内容：** 需求分析沿用 T169 已接入的真实分析 Service；新增独立“需求评审”节点，校验模块/功能点/联合功能/测试点映射、验收条件和数据流并持久化 `review_status`、`review_report`、评审父运行；新增独立“需求拆解”节点，只接受当前 `analysis_fingerprint` 对应的 `review_status=passed` 版本，输出带来源指纹的模块、功能点、业务流程、数据对象和验收条件。
+- **同步/异步一致性：** `RequirementAnalysisRecordService.review_latest_analysis` 与 `decompose_reviewed_analysis` 是唯一领域 Service；REST 同步入口和 `run_requirement_review`/`run_requirement_decomposition` Celery 任务共用相同 Service、门禁和持久化格式。真实业务父运行只有在产物落库后才完成，失败会保留失败节点和错误原因。
+- **REST/前端闭环：** 新增 `review-requirement/`、`decompose-requirement/` 入口，需求分析工作台展示三段状态、运行提示、运行 ID 和拆解门禁；评审未通过或版本指纹失效时拆解按钮不可用且 API 返回明确阻断。拆解结果不直接生成测试用例。
+- **变更文件：** 修改 `backend/apps/requirement_analysis/models.py`、`serializers.py`、`services.py`、`views.py`、`tasks.py`、`frontend/src/api/requirements.js`、`frontend/src/views/RequirementAnalysisView.vue`、`doc/PROJECT_STATUS.md`；新增 `backend/apps/requirement_analysis/migrations/0007_requirementanalysis_review_decomposition.py`、`backend/apps/requirement_analysis/tests_t170.py`。本地已应用 `requirement_analysis.0007`；无新增依赖或运行配置。
+- **第一轮专项测试：** `manage.py test apps.requirement_analysis.tests_t170`，4/4 通过，覆盖未评审拆解阻断、评审失败留痕、同步/异步同一 Service、401/403。
+- **第二轮全量/集成测试：** `manage.py test`，540/540 通过。首次未注入既有测试所需 `MODEL_CONFIG_FERNET_KEY` 时有17个历史环境加密测试在 setUp 失败，补齐仅进程级临时 Fernet key 后重跑通过；密钥未写入代码、配置或文件。
+- **静态与构建：** `manage.py check`、`makemigrations --check --dry-run`、Python `py_compile`、`npm.cmd run build`（Vite 8.2.2，1703 modules）、`git diff --check` 通过。服务 `http://127.0.0.1:5173/`、`http://127.0.0.1:8000/`、`http://127.0.0.1:8000/api/health/` 均 200。
+- **真实 Playwright MCP：** 管理员真实登录态从需求分析页导入临时需求；对受控完整分析版本执行评审 POST 200、拆解 POST 200，Network 回读两条 Skill 父运行及结果 GET 200；刷新后状态仍为 `analysis complete → review passed → decomposition completed`。历史结构缺口版本真实评审返回 400；viewer 真实登录态调用评审返回 403；浏览器新标签页清理后 Console 为 0 error/0 warning。临时需求和 viewer 账号已清理，管理员登录态已恢复。
+- **变更影响矩阵：**
+
+  | 变更点 | 直接/间接调用方 | 链路证据 | 结果 |
+  | --- | --- | --- | --- |
+  | T170 评审/拆解字段与迁移 | RequirementAnalysis ORM、Serializer、需求文档详情 | 0007 迁移、check、全量 540 项、刷新持久化回读 | 通过 |
+  | `review_latest_analysis` | 评审 REST、Celery 任务、需求工作台 | 通过/结构缺口失败/父运行完成或失败 | 通过 |
+  | `decompose_reviewed_analysis` | 拆解 REST、Celery 任务、后续测试点入口 | 未评审 400、指纹门禁、模块/功能/流程/数据/验收产物回读 | 通过 |
+  | 需求工作台阶段入口 | requirements API、前端按钮、运行提示 | 正常 200、400、403、刷新后状态、最终干净标签页 | 通过 |
+
+- **当前边界与下一步：** T170 完成但等待用户验收；T171 测试点拆解/评审与人工确认、T172 用例编写以及 T173+完整 DAG 尚未开始。保留 T167/T168/T169 既有未提交修改；不提交、不推送、不部署、不回滚。
+
+## 2026-09-24 T169 统一 Skill 执行快照、血缘与运行时（实现原型，需求对齐整改中）
+
+> **用户验收反馈（2026-09-24）：当前实现与目标业务闭环不一致，暂不得验收或推进后续任务。**
+> 已验证的内容是通用运行时原型：从 Skills 工作台手工输入 JSON，调用受控的确定性 `execute_skill`，结果只写入 `SkillChainRun.output_snapshot`。目标要求是由需求分析页/用例页触发同一个父运行，冻结完整来源链和执行计划，调用真实业务 Service，并把有效产物写入需求分析、测试点、用例等业务记录；Skills 工作台只承担链契约/配置/运行证据治理，不应成为用户主业务入口。
+> 整改顺序：保留现有运行/节点/事件/控制 API 作为底层能力 → 接入需求分析与用例生成业务入口 → 将节点输出映射到真实业务记录并以持久化成功作为完成条件 → 再进行真实 Playwright MCP 全链验收。整改完成前暂停 T169A、T169B、T170-T177 及阶段30。
+
+### T169 业务入口整改（2026-09-24，已完成并作为 T170 基础）
+
+- 需求分析、用例生成、用例评审入口现在创建真实业务父运行，分别关联 `RequirementDocument.analysis_run`、`CaseGenerationRecord.generation_run` 和 `CaseGenerationRecord.review_run`；同步与 Celery 任务共用 `BusinessSkillRunService`。
+- 父运行只在真实领域 Service 成功写入需求分析/用例/评审产物后进入 `completed`；模型网络失败、任务取消、超时、入队失败和业务异常均写入 `failed`，不会再用规划型 `execute_skill` 回填成功状态。
+- Skills 工作台的链路运行入口降级为“调试运行”，页面文案明确业务操作应从需求分析/用例生成工作台进入；运行记录同时展示治理调试和业务父运行证据。
+- 兼容保留解析接口的 `skill_execution` 字段，但明确标识为 `document_parser`，不会宣称已经启动需求分析运行。
+- **整改文件：** 新增 `backend/apps/skills/business_execution.py`、`backend/apps/skills/tests_t169_business.py`、`backend/apps/requirement_analysis/migrations/0006_requirementdocument_analysis_run.py`、`backend/apps/case_generation/migrations/0004_casegenerationrecord_business_runs.py`；修改需求分析/用例生成模型、Serializer、View、Task、Skills 工作台和前端状态联调。
+- **第一轮专项测试：** `apps.skills.tests_t169_business` 3/3；覆盖真实 Service 父运行完成、排队父运行关联、业务产物回读。
+- **第二轮组合回归：** `apps.requirement_analysis apps.case_generation apps.skills` 212/212；全量 `manage.py test` 536/536。
+- **静态与构建：** `manage.py check`、`makemigrations --check --dry-run`、Python `py_compile`、前端 `npm.cmd run build`、`git diff --check` 通过；本地已应用 `case_generation.0004`、`requirement_analysis.0006`。
+- **真实 Playwright MCP：** 管理员业务页面创建临时需求并调用真实需求分析入口；模型网络不可用时 API 返回 502，需求文档回读包含 `analysis_run`，父运行回读为 `failed/local_network_blocked` 且无伪造输出。已有用例评审入口回读 `review_run` 与 `failed/review_failed`。匿名 API 401 和权限边界沿用前一轮真实验证；临时需求删除返回 204，列表确认不存在；新管理员标签页最终 Console 为 0 error/0 warning。真实模型正向成功路径未在本轮浏览器中宣称通过，原因是当前本地环境的供应商网络阻断；同步真实 Service 成功语义由 3 项专项测试覆盖。
+- **当前边界：** 本次完成的是 T169 的真实业务入口与产物关联整改；T170 已在其基础上完成需求分析→需求评审→需求拆解三段闭环，测试点→人工门禁→用例→评审的后续链路仍未开始。
+
+- **任务边界：** 完成单次 Skill 链运行启动、执行快照、节点持久化、按依赖顺序执行、幂等、检查点暂停/恢复、取消、人工门禁等待、失败/超时状态、节点重试和有序事件血缘；未实现 T169A 本地 SKILL.md、T169B 通用进度工作台或后续业务全链按钮。
+- **实现文件：** 新增 `backend/apps/skills/execution.py`、`backend/apps/skills/tasks.py`、`backend/apps/skills/migrations/0014_skillchainrun_skillchainnoderun_skillchainrunevent_and_more.py`、`backend/apps/skills/tests_t169.py`；修改 `backend/apps/skills/admin.py`、`models.py`、`permissions.py`、`serializers.py`、`views.py`、`urls.py`、`frontend/src/api/skills.js`、`frontend/src/views/SkillsView.vue`。
+- **持久化契约：** `SkillChainRun` 是唯一父运行；`SkillChainNodeRun` 保存节点状态、输入/输出和检查点；`SkillChainRunEvent` 保存有序事件。运行启动时冻结蓝图、配置合并结果、节点定义、Skill 元数据和输入快照；敏感键在持久化快照中脱敏。
+- **控制语义：** 暂停在安全检查点确认；恢复使用原始执行快照并重新入队；取消使用协作式控制；`human_gate` 进入 `waiting_human`，恢复时写入人工结果；失败/超时可从同一快照重试节点。蓝图启停仍只控制新运行选择，不与单次运行控制混用。
+- **第一轮测试：** `manage.py test apps.skills.tests_t169`，最终 6/6 通过；覆盖快照/幂等/血缘、暂停恢复取消、人工门禁、等待人工取消、匿名 401、项目越权 403、无配置阻断。
+- **第二轮测试：** `manage.py test apps.skills`，最终 66/66 通过。
+- **全量回归：** `manage.py test`，最终 533/533 通过，退出码 0。
+- **静态与构建：** `manage.py check`、`makemigrations skills --check --dry-run`、Python `py_compile`、`npm.cmd run build` 和 `git diff --check` 通过；本地数据库已应用 `skills.0014`。未新增依赖或运行配置。
+- **服务检查：** `http://127.0.0.1:5173/`、`http://127.0.0.1:8000/`、`/api/health/` 均 200；未登录 `/api/skill-chain-runs/` 返回 401。日志当前已恢复正常，历史日志中的启动期 NameError/模型字段冲突来自热重载前旧进程，已通过 Django check、迁移和当前请求复核。
+- **真实 Playwright MCP 验收：** 使用真实本地登录态 `platform_admin` 完成 Skills 工作台闭环。首次加载的运行区域正确显示“暂无运行记录”；从启用的 `test` 蓝图启动运行后进入“等待人工”，详情显示当前节点 `human_review`、安全检查点 `primary_skill`；Network 回读确认父运行/节点状态持久化，输入与下游输出中的 `token` 均为 `[REDACTED]`。点击恢复并提交人工 JSON 后父运行和两节点均为 `completed`，输出快照持久化；另一次等待人工运行点击取消最终落到 `cancelled`。提交非法 JSON 仅显示字段错误且没有发起新的启动 POST。
+- **真实负向/权限验收：** 未认证运行请求经 Network 返回 401；临时项目链由管理员通过真实 API 创建、校验、发布、启用，临时 viewer 真实注册并登录后启动该链返回 403 `run_forbidden`。临时蓝图已暂停并归档，临时 viewer 已停用；管理员 API 回读确认 `archived`/`is_active=false`。
+- **最终干净会话：** 新 Playwright 标签页重新登录管理员后，`/api/auth/me/`、Skills、Projects、Skill Chains、Configurations、Runs 均 HTTP 200；最终页面 Console 为 0 error / 0 warning。过程中负向测试产生的预期 401/403 已在最终干净会话清除。
+- **变更影响矩阵：**
+
+  | 变更点 | 直接/间接调用方 | 验证证据 | 结果 |
+  | --- | --- | --- | --- |
+  | Run/Node/Event 三层模型与迁移 | Django ORM、只读 admin、运行 Serializer、REST 详情/事件 | 迁移、check、66 项 Skills 与 533 项全量测试；浏览器父/节点/事件回读 | 通过 |
+  | `SkillChainExecutionService` | Skill 链启动 REST、Celery 入口、暂停/恢复/取消/重试控制 | T169 专项正常、阻断、幂等、人工门禁、失败状态与事件序列 | 自动化通过 |
+  | 受控 `execute_skill` 调用 | Skill 输入/输出 Schema、上下游节点数据链 | 两节点依赖执行、快照脱敏、失败/超时分类 | 自动化通过 |
+  | Run REST 权限与路由 | `SkillsView.vue` 运行入口、详情、控制按钮 | 匿名 401、真实 viewer 项目运行 403、API 健康及管理员回读 | 通过 |
+  | 前端运行工作台 | 蓝图启用状态、运行列表、详情快照、人工恢复 | 真实 Playwright 正常/空态/字段错误/401/403/取消/恢复、Network 回读、最终 Console 0/0 | 通过 |
+
+- **下一步：** T169 作为 T170 基础已完成；当前等待用户验收 T170。不提交、推送、部署或回滚。
+
+## 2026-09-21 T168 蓝图生命周期治理实现与回归（待用户验收）
+
+- **任务边界：** 完成 T168 蓝图版本治理，并在既有 T167 分层配置、配置解析/回滚/审计工作上回归。保留 T167/T168 未提交修改；没有开始 T169；未提交、推送或部署。用户要求先验收 T168，再进入下一任务。
+- **实现摘要：**
+  - 蓝图版本按草稿→校验→发布→启用推进；暂停只阻止新运行选择，已启动运行不受影响；归档保留历史。
+  - 初始版本没有历史目标时，工作台显示“暂无可回滚版本”；API 返回 409 no_rollback_target，且不增加审计记录。指定历史已发布版本回滚会创建新的草稿版本，不覆盖旧版本。
+  - 蓝图与配置分别记录操作者显示名、平台/项目角色、授权范围和操作结果。审计读取权限按平台/项目范围检查。
+  - 配置仍允许显式引用草稿蓝图；解析时会返回明确阻断状态，不会静默启用。配置第一次回滚无历史时禁用入口；有前序审计状态后回滚恢复快照。
+  - 真实预览发现冲突层级缺少链名称时显示 undefined；已新增安全显示逻辑，冲突详情显示“多个配置（N 条）”。
+- **变更文件（T167/T168 累积工作区）：**
+  - 修改：backend/apps/skills/admin.py、models.py、permissions.py、serializers.py、urls.py、views.py；frontend/src/api/skills.js、frontend/src/styles/components.css、frontend/src/styles/skills.css、frontend/src/views/SkillInstallationsView.vue、frontend/src/views/SkillsView.vue；doc/CONTRACT_ENFORCEMENT.md、doc/PRD_V5.0.md、doc/PROJECT_STATUS.md、doc/TASKS_V5.0.md、doc/TECH_ARCH_V5.0.md。
+  - 新增：SKILLS_BLUEPRINT_FLOW.md；backend/apps/skills/contracts.py、services.py、tests_t167.py、tests_t168.py；skills 迁移 0009—0013。
+  - 本地数据库已应用 skills.0013_skillchain_lifecycle_audit_snapshots；迁移差异检查无未生成迁移。未增加依赖或运行配置。
+- **第一轮测试：** apps.skills.tests_t167 + apps.skills.tests_t168，15/15 通过。
+- **第二轮测试：** manage.py test apps，519/519 通过。
+- **静态与构建：** 最终公共方法类型标注复核后重新执行 py_compile、manage.py check、makemigrations skills --check --dry-run，均通过；专项 15/15 与全量 519/519 均在最终代码上复跑通过。npm.cmd run build 成功（Vite 8.2.2，1703 modules）；git diff --check 退出码 0。Git 对若干既有文件提示 LF 将来会转为 CRLF，没有 whitespace 错误。
+- **真实浏览器链路证据：**
+  - platform_admin 通过本地登录页登录，登录 API 与 /me 返回 200；Skill 列表、蓝图和配置 API 返回 200。
+  - 工作台新建项目蓝图 POST 201；首版回滚入口禁用；直接回滚返回 409，历史审计数前后均为 1。
+  - 工作台依次触发 verify/publish/enable，三个 API 均为 200；暂停和恢复均为 200。暂停后解析 reason_code=chain_not_enabled 且 blocked=true。
+  - 派生 1.0.1 草稿 POST 201，编辑 max_calls=21 后 PATCH 200；校验/发布/启用成功。差异显示 max_calls，回滚至 1.0.0 返回 201 并持久化为 1.0.2 草稿（max_calls=20）；旧版本保留。
+  - 新建项目配置选择 1.0.1，POST 201，基线审计显示 platform_admin、平台管理员、项目测试demo、结果 success；第一条审计时工作台显示“暂无可回滚配置版本”。编辑覆盖 max_calls=23 后审计为 2 条；回滚返回 200，持久化恢复 overrides={}，审计为 3 条。
+  - 项目 viewer 真实登录后，版本列表 GET 200、蓝图审计 GET 403，页面隐藏“蓝图审计”入口。匿名审计请求 401；缺少必填字段创建请求 400。
+  - 项目原有 test 配置与临时配置同时存在时，解析器以 configuration_conflict 阻断；页面现显示“项目级：多个配置（2 条）”。临时配置撤销后，原有配置解析 200。注入 503 后页面显示服务错误，移除拦截重试 200；旧配置解析成功且 runtime_ready=false。
+  - Console warning 为 0。Console HTTP errors 对应刻意执行的 401/403/400/409/503 负向用例和短效令牌刷新；一次早期探测误用 /api/auth/bootstrap-status/ 返回 404，正确的 /api/auth/bootstrap/status/ 返回 200。没有未解释的 Vue/JavaScript 异常。
+- **变更影响矩阵：**
+
+  | 变更点 | 调用方/受影响功能 | 验证证据 | 结果 |
+  | --- | --- | --- | --- |
+  | SkillChain 生命周期和不可变版本 | Skills 工作台、skill-chains REST、配置解析器 | 创建、校验、发布、启用、暂停/恢复、派生、差异、显式历史回滚、归档和持久化回读 | 通过 |
+  | 操作者快照和审计权限 | 蓝图/配置历史 REST 与工作台入口 | 管理员身份/项目范围回读；viewer 版本 200、审计 403；匿名 401 | 通过 |
+  | 首次回滚边界 | 蓝图与配置回滚入口/API | 首版入口禁用；蓝图 API 409 且审计不变；专项测试覆盖配置 409 | 通过 |
+  | 分层配置及预览 | T167 配置 API、解析按钮和下游运行配置 | 旧数据、层级冲突、版本锁定、启停阻断、503 重试、持久化和审计回读 | 通过 |
+  | 冲突层级文案 | SkillsView 解析预览 | 实际冲突渲染“多个配置（2 条）”，无 undefined | 通过 |
+
+- **测试数据清理与恢复：** 临时项目配置正式撤销返回 204，列表确认不存在；临时 viewer 成员已删除，账号已停用。测试蓝图 1.0.0/1.0.1/1.0.2 均已归档、configuration_count=0；按不可变历史规则保留归档及审计，不再可供新运行选择。T168 专项/全量测试数据库均销毁。未清理 T167/T168 工作区修改或既有未跟踪资料。
+- **服务复核：** http://127.0.0.1:5173/ 和 http://127.0.0.1:8000/ 均返回 200；Django health 为 ok。
+- **遗留与顺序：** T168 实现、回归和本地浏览器验收已完成，等待用户人工验收。验收通过后才启动 TASKS_V5.0.md 中的 T169（单次运行启动/检查点暂停恢复）；本轮没有提前开发 T169。
+
+## 2026-09-21 Skills真实执行链与进度需求修订（文档待人工评审）
+
+- **范围判断：** 属于跨运行时、业务Service、异步队列、REST、前端工作台和下游执行器的中大型改造；弹窗必须投影可信父运行，不能单独增加前端进度状态。
+- **源码审查发现：** 蓝图列表目前只有启用/停用；范围配置列表的回滚/审计操作对象是SkillChainConfiguration，不是蓝图版本。配置预览为只读且不会创建运行。首版回滚无目标和审计身份/读取权限规则此前未写清；无蓝图版级暂停/回滚/审计工作台，也无单次运行启动/检查点暂停/恢复控制。还发现需求/用例入口语义分叉、异步Celery跳过Skill、同步事后旁路调用planned Skill、排队后读取latest分析的版本竞态、五轮生成完成早于后处理落库、运行记录缺父级和有序事件。
+- **产品决策：** PRD要求完整展示需求分析→需求评审→需求拆解→测试点拆解/评审→人工测试点确认→用例编写/业务校验/持久化→自动评审→人工用例评审。点击后先冻结执行计划：有效上游标为复用来源、缺失/过期节点按策略执行、人工门禁暂停；完整来源链与本次进度分开。只有当前操作全部必需节点完成校验并保存才显示100%。
+- **任务拆解：** 蓝图版本治理并入当前T168，与分层配置解析/配置审计一起完成，不另立并行任务；T169增加单次运行启动/检查点暂停恢复，T169B提供运行控制进度视图；阶段29总计14项。阶段30拆为T178-T184，覆盖UI、接口、性能设计/真实执行器和跨类型验收；总计7项。
+- **技术顺序：** 链契约 → 分层范围配置与蓝图生命周期治理 → 统一执行快照及单次运行控制 → 真实Skill产物进入业务Service → 链计划/复用/人工门禁 → 统一按钮父运行 → 失效与下游阻断 → 全链MCP验收 → 再扩展三类自动化执行器。
+- **变更文件：** doc/PRD_V5.0.md、doc/TASKS_V5.0.md、doc/TECH_ARCH_V5.0.md 和本状态文件。仅更新需求/计划文档，没有改业务代码、API、数据库、依赖或运行配置。
+- **验证：** UTF-8关键片段回读、阶段任务数/依赖一致性核对通过；git diff --check退出码0（Git报告若干LF到CRLF转换提醒）。仅更新需求/计划文档，没有运行产品测试或浏览器测试。
+- **当前边界：** 当前只允许完成T168并等待用户验收；T168验收后再开始T169，不能并行或跨任务。文档边界已同步，产品实现尚未开始；保留T167/T168未提交修改；没有提交、推送或部署。
+
+## 2026-09-21 T168 回归门禁收尾（待用户验收）
+
+- **任务边界：** 续接 T168 回归，保留 T167/T168 既有未提交修改；未开始其他任务。没有提交、推送或部署。
+- **收尾修正：** 仅从 `backend/apps/skills/serializers.py` 文件尾移除一个多余空行，没有改变序列化逻辑；UTF-8 回读确认文件以单个换行结束。
+- **专项测试：** `apps.skills.tests_t167` 与 `apps.skills.tests_t168` 共 14/14 通过，测试数据库销毁。
+- **全量测试：** `manage.py test apps` 共 518/518 通过；测试进程使用临时 `DJANGO_SECRET_KEY` 和随机 Fernet key，未写入配置文件或密钥文件，测试数据库销毁。
+- **静态/构建门禁：** `manage.py check` 通过；`makemigrations --check --dry-run` 为 No changes detected；`npm.cmd run build` 成功（Vite 8.2.2，1703 modules）；`git diff --check` 退出码 0。Git 仍提示既有 LF 到 CRLF 转换提示。
+- **变更影响矩阵：**
+
+  | 变更点 | 调用方/受影响功能 | 验证证据 | 结果 |
+  | --- | --- | --- | --- |
+  | `serializers.py` EOF 空白 | 配置 Serializer 所在模块；不改变运行逻辑 | UTF-8 回读、`git diff --check`、14 项专项和 518 项全量回归 | 通过 |
+  | T168 配置解析/启停/回滚 | 配置 API、Skills 工作台解析预览、审计历史 | 全局/项目/功能层解析；停用链路 `chain_not_enabled` 阻断并恢复；停用配置 `configuration_disabled` 阻断静默降级并恢复；回滚后持久化回读 | 通过 |
+  | 配置授权边界 | `/api/skill-chain-configurations/` 写入口 | 未登录解析返回 401；真实 viewer 会话提交配置返回 403 `您没有执行该操作的权限。`，未创建配置 | 通过 |
+  | 服务错误恢复 | Skills 工作台解析按钮与解析 API | Playwright 注入 503 显示失败详情；恢复原请求后重试 200；运行就绪持续为 false | 通过 |
+
+- **浏览器链路证据：** 管理员真实登录态验证启用 API、空配置提示、重复范围字段错误 400、分层预览、历史/回滚、持久化回读、停用与恢复；旧 Skill 列表仍保留现有 10 条数据。认证刷新链路记录过一次 401 后 refresh 200、`/me` 200。负向用例会在 Console 累计 HTTP error 记录，warning 为 0；未将负向状态误报为零错误。
+- **清理和本地状态：** 本轮三条临时配置及测试链已删除，DELETE 均为 204，配置列表和链路列表回读均为 `[]`。真实 viewer 测试账号由管理员停用、测试密码/会话已清理；用户 API 的 DELETE 返回 405，故账号记录保留为停用态以维持账号审计轨迹。此前已应用的本地迁移 `skills.0012_skillchaingovernanceaudit` 保持不变；本轮未产生新迁移。
+- **待用户验收：** 本轮自动化与浏览器回归门禁通过，暂不启动下一任务。启动审计中记录的 PRD 11.6“待决策者评审”标题与状态文档此前“方案已批准”的表述差异仍待决策者确认/统一；确认前不据此推进 T169A/T175。
+## T168 续接归档（2026-09-20）
+
+- **续接范围：** 按此前评审通过的方案继续 T168 Skill 链路配置治理；本次在回归中段暂停。保留现有 T167 未提交修改。
+- **已落地但待复核：** 后端链路解析、配置审计/回滚和启停治理；前端配置预览、历史、回滚和安装状态/运行就绪区分；新增 T168 专项测试。此前意外覆盖后已从最后一次成功的 Vite 模块恢复并重建 SkillsView.vue，语义已恢复，须继续核对工作区差异。
+- **已有测试证据（针对最近改动前的版本）：** apps 全量 518 项通过（进程内临时测试 Fernet key，约 53 秒）；T167+T168 专项 14 项通过；manage.py check、迁移无差异检查通过；前端 npm run build 通过。其后又改了审计事务、配置撤销/删除、链路删除审计和 API 路径等，以上测试必须重跑，不能据此标记完成。
+- **浏览器续接点：** 本地前后端此前均健康（5173/8000）；已登录 platform_admin。真实 UI 建立了临时草稿链路 T168-MCP-20260920-A。启用链路曾因前端错误拼接 URL 返回 404，代码已修正为拼接真实 ID，但尚未重新验证；对应旧标签 Console 留有该次 404。完成验证后清理临时链路及配置，并记录清理后的持久化回读。
+- **下次优先顺序：** 先按项目规则读取会话契约链并执行启动审计；核对 git status/diff，确认 T167 修改仍保留；验证修正后的启用 API；重跑 T167+T168 专项、Django check/迁移检查、前端构建、apps 全量 518 项；继续 Playwright 真实登录态矩阵，覆盖正常/空数据/字段错误、401/403、服务失败和恢复、权限边界、旧配置兼容、版本冲突、回滚/审计、持久化回读与清理，并检查 Console/Network。最后 UTF-8 回读关键片段并执行 git diff --check；本次检查发现 backend/apps/skills/serializers.py:232 有新增 EOF 空行，且 Git 发出 LF 到 CRLF 行尾转换警告，续接时处理。
+- **当前边界：** T168 尚未验收，不更新为完成；继续仅处理 T168，不开始 T169A/T175 编码。不得清理或覆盖 T167 修改；不提交、不推送、不部署。下次完成回归后更新本文件并提交用户审核。
+
+
+## 2026-09-20 阶段29方案自审：Skill安装记录、能力库与链路使用（文档评审通过）
+
+- **本次边界：** 仅更新 PRD、任务拆分、技术架构和状态交接；没有开始编码，没有改变 T167 当前实现、测试证据或待验收状态。
+- **自审决策：** 安装记录保存来源/哈希/审批/权限/生命周期证据，Skills能力库保存平台标准化能力契约，两者由平台依据稳定来源身份自动关联；平台生成稳定 `skill_id`，普通用户在工作台按名称选择，不手写 UUID/JSON。将“已安装”与“运行就绪”分成不同状态；未实际执行的计划、占位、Mock/Dry-run 结果不能计作真实能力或进入下游。
+- **任务拆分：** T168 展示关联与两类状态并提供名称选择；T169 只接受真实运行证据；新增 T169A 实施本地 `SKILL.md` 受控适配与运行就绪门禁；T175 在该适配边界上扩展其他第三方包。T169A 依赖 T127-T132、T167-T169，T175 依赖 T169A；T170-T174 的内置能力业务纵向推进不被 T169A 阻塞。阶段29任务数由11调整为12。
+- **变更文件：** `doc/PRD_V5.0.md`、`doc/TASKS_V5.0.md`、`doc/TECH_ARCH_V5.0.md`、本文件。新增要求已同步到产品需求、任务边界、架构对象/状态语义和依赖图。
+- **验证记录：** 已按 UTF-8 读回新增关键段落并核对 PRD/TASKS/TECH_ARCH/状态的任务编号、职责与依赖一致；本地前端 `5173`、后端 `8000` 根地址及 `/api/health/` 均 HTTP 200。文档专项检查为 `git diff --check`；本轮无代码/接口变更，不运行产品测试。
+- **工作区保护：** 保留原有 T167 后端、前端、迁移、`.playwright-mcp/` 和其余未提交内容；未提交、未推送、未部署。
+- **评审结果：** 用户已批准本次文档方案；随后确认 T167 实现及两项修复通过验收。
+
+## 2026-09-20 阶段29 T167：两项验收问题修复（已通过用户验收）
+
+- **任务边界：** 只修复侧栏溢出滚动和 Skills/Skill 链契约说明，不开始 T168 配置工作台或 T169 运行时。
+- **问题一：** 工作台侧栏导航改为可独立纵向滚动；品牌标识与退出登录区保持在侧栏边缘，不随导航列表滚动。真实页面 1280×600 时导航 scrollHeight/clientHeight 为 832/437，scrollTop 可到约 395；390×600 时为 815/485，scrollTop 可到约 329；窄屏侧栏宽 72px，无页面横向溢出。
+- **问题二：** Skills 页面明确区分单项 Skill（单项可复用能力）、Skill 链契约（步骤/依赖/数据格式/人工确认/失败策略的蓝图）、链配置（后续 T168）和实际运行（后续 T169）。新建链默认预填可引用现有核心 Skill、后接人工确认节点的完整示例；增加逐字段说明、编辑对象范围、草稿不会生效/执行的醒目提示；区分“编辑能力”“编辑链路蓝图”和“试运行”操作。
+- **变更影响矩阵：**
+
+  | 变更点 | 调用方/受影响功能 | 验证用例 | 结果 |
+  | --- | --- | --- | --- |
+  | `frontend/src/styles/components.css` 侧栏导航布局 | `WorkspaceShell.vue` 被所有工作台路由共用；影响全部侧栏入口可达性，不改变路由或权限 | 1280×600、390×600 实测滚动高度/位置，导航可达，窄屏页面无水平溢出 | 通过 |
+  | `frontend/src/views/SkillsView.vue` 与 `frontend/src/styles/skills.css` | `/workspace/skills`；Skills/Skill 链列表、说明、创建/编辑弹窗与错误反馈 | 页面说明、帮助展开、示例创建/回读/编辑、JSON 字段错误、契约语义错误与重试 | 通过 |
+  | `doc/TECH_ARCH_V5.0.md`、`doc/CONTRACT_ENFORCEMENT.md`、本状态文件 | 后续会话启动审计、T168/T169 边界与交接 | 复读 UTF-8 关键段落；未改变业务 API、配置或迁移 | 通过 |
+
+- **浏览器链路证据：** 登录管理员在真实本地页面以 POST 201 创建预填示例，GET 200 回读并确认状态为草稿、包含 2 个节点；PATCH 200 修改用途说明并回读；无效 JSON 显示字段错误且不发写请求；去掉核心 Skill 的语义错误由 API 返回 400 并在弹窗展示，持久化旧草稿未被覆盖。匿名 GET 401；管理员创建/更新/删除链的状态分别为 201/200/204。临时链删除后列表为空，未留下本轮测试记录。一次性浏览器内模拟 503 显示可重试反馈，恢复原请求实现后重试 GET 200；模拟拦截已恢复。历史 T167 真实角色测试已验证非管理员写共享链 403。新建干净标签页复核 Console 为 0 error/0 warning，关键链路请求 200；测试过程中的 401/400 是有意验证/令牌自动刷新产生的失败响应，均已恢复。
+- **第二轮回归：** `apps.skills.tests_t167` 专项 7/7 通过；全量 Django `apps` 511/511 通过（退出码 0）；`manage.py check` 无问题；`makemigrations --check --dry-run` 为 No changes detected；Vite 生产构建成功（1703 modules）；`git diff --check` 通过。
+- **文件、数据和外部副作用：** 本次修复未新增依赖、迁移或环境配置；未运行付费模型；创建的临时链已删除且回读确认列表为空；未改动 `.env.remote`、数据库或 Redis 数据卷。本轮 MCP 截图保存在既有 `.playwright-mcp/` 证据目录，保留不清理。
+- **验收结果/下一任务：** 用户已确认 T167 实现及两项界面修复通过验收；下一任务为 T168 分层Skill配置解析与管理工作台。
+
+## 2026-09-20 阶段29 T167：Skill 链领域模型与能力契约（实现和验证完成，已通过用户验收）
+
+- **任务边界：** 本轮只处理 T167；没有实现 T168 的配置优先级解析/管理工作台，也没有进入 T169 运行时快照。T168 是下一任务；用户已完成 T167 验收，须先通过启动审计再开始。
+- **实现内容：** 新增 backend/apps/skills/contracts.py，定义 skill-chain-v1 完整节点契约，拒绝仅 Skill ID 列表、循环依赖、缺少或重复核心 Skill、非 Skill 节点冒用 Skill ID/核心角色和畸形 Schema 类型；依赖与兼容 Skill ID 均规范化后校验。新增 SkillChain、全局/项目/功能/即时 SkillChainConfiguration 数据结构、序列化、REST 路由和权限边界。新增 services.py 生成版本化配置层快照；快照保留层级、项目/功能/请求范围、锁定版本、覆盖字段及其引用的链版本/定义，配置保存会生成新快照，后续改链不会改写既有快照。项目链不能作为全局配置，也不能被关联到另一项目。
+- **前端闭环：** SkillsView.vue 提供 Skill 链契约的列表、创建、编辑、删除、空态、字段错误和重试入口；真实 API 通过本地代理验证。配置优先级工作台留在 T168 范围内。
+- **变更影响矩阵：**
+
+  | 变更点 | 直接/间接调用方与受影响功能 | 验证证据 | 结果 |
+  | --- | --- | --- | --- |
+  | 链契约规范化器 | SkillChain.clean、SkillChainSerializer → /api/skill-chains/ → skills.js、SkillsView.vue；影响节点/Schema/依赖校验、链 CRUD | 专项模型/API；真实界面创建回读；循环、无核心、重复提交均 400 | 通过 |
+  | 分层配置模型与快照服务 | SkillChainConfiguration.save → build_skill_chain_configuration_snapshot；配置序列化/ViewSet/路由及 Django admin | 四层配置专项；真实 API 回读；链版本变化保持旧快照，配置变更生成新快照 | 通过 |
+  | 项目/全局范围权限 | 配置 Serializer candidate.clean 与对象权限；影响项目链、项目覆盖和全局默认读写 | 项目经理跨项目绑定专项 400；项目链设为全局 400；先前 viewer 写共享链 403；匿名 401 | 通过 |
+  | 旧数据与迁移 | Skills 迁移链 0009–0011；旧 Skill 列表与新链契约读取 | 本地迁移应用、无待生成迁移；旧 Skills API 200 且 10 条记录仍可见 | 通过 |
+
+- **第一轮测试：** apps.skills.tests_t167 7/7 通过。
+- **第二轮测试：** Django 全量 apps 511/511 通过；manage.py check 无问题；makemigrations --check --dry-run 为 No changes detected；前端 Vite 构建成功（1703 modules）；git diff --check 无错误（仅 LF→CRLF 提示）。
+- **真实浏览器链路证据：** 管理员 UI 创建链 201、列表/数据回读 200；全局和项目配置分别 201，配置快照持久化后能正确保持旧链版本，并在配置更新时刷新；循环、无核心、重复链、项目链全局误绑返回 400；匿名链请求 401。受控 503 显示可重试错误，恢复真实请求后重试成功并回到空态。旧 Skills 页面数据继续显示；最终干净标签页 Console 0 error/0 warning，关键 Network 请求 200。
+- **失败恢复与清理：** 两条临时链均删除 204；最终链表中 T167 验收记录为 0，旧临时链详情 404；用户列表核实无临时 viewer/debug 账号。测试期间无付费模型调用。MCP 在既有未跟踪 .playwright-mcp/ 目录写入快照/日志证据，保留未清理。
+- **迁移、环境和 Git：** 新增 0009 链/配置表、0010 配置快照字段、0011 对 0010 前配置数据的兼容回填；三项迁移均已应用到本地开发数据库。全量测试使用临时进程级 DJANGO_SECRET_KEY 和本地现有 .runtime/model-config-fernet.key，密钥未打印或写入。前端、后端及健康接口均 HTTP 200。所有改动仍在工作区，未提交、未推送、未部署。
+- **关键恢复决策：** 普通执行通道的 Windows setup refresh 失败；通过明确授权的 PowerShell 执行恢复只读诊断和项目测试。直接使用系统 Python 缺少 Django；改用项目 .venv 并提供 dev settings 所需的本地加密密钥后，全量测试通过。没有为绕过错误而改动业务测试断言。
 
 ## 2026-09-18 远程部署记录（72470e0）
 

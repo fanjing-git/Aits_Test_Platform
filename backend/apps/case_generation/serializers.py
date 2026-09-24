@@ -53,12 +53,12 @@ class CaseGenerationRecordSerializer(serializers.ModelSerializer):
         fields = (
             "id", "project", "project_name", "document", "document_title", "rounds",
             "total_cases", "auto_cases", "manual_cases", "cases", "coverage_report",
-            "review_rounds", "review_report", "status", "created_at", "reviewed_test_point_ids",
+            "review_rounds", "review_report", "generation_run", "review_run", "status", "created_at", "reviewed_test_point_ids",
         )
         read_only_fields = (
             "id", "project", "project_name", "document_title", "rounds", "total_cases",
             "auto_cases", "manual_cases", "cases", "coverage_report", "review_rounds",
-            "review_report", "status", "created_at",
+            "review_report", "generation_run", "review_run", "status", "created_at",
         )
 
     def get_review_report(self, obj: CaseGenerationRecord) -> dict:

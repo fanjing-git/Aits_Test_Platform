@@ -46,6 +46,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       REQUIREMENT_DOCUMENT_ROOT: /app/.runtime/requirement-documents
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      ALL_PROXY: ${ALL_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db,redis}
     command: ["sh", "-c", "python manage.py bootstrap_platform_admin --allow-unconfigured && exec python manage.py runserver 0.0.0.0:8000 --noreload"]
     volumes:
       - requirement_documents_data:/app/.runtime/requirement-documents
@@ -73,6 +77,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       REQUIREMENT_DOCUMENT_ROOT: /app/.runtime/requirement-documents
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      ALL_PROXY: ${ALL_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db,redis}
     volumes:
       - requirement_documents_data:/app/.runtime/requirement-documents
     depends_on:
@@ -96,6 +104,10 @@ services:
       POSTGRES_HOST: db
       REDIS_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      ALL_PROXY: ${ALL_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db,redis}
     depends_on:
       db:
         condition: service_healthy

@@ -25,6 +25,22 @@ class CaseGenerationRecord(models.Model):
     coverage_report = models.JSONField(default=dict)
     review_rounds = models.PositiveSmallIntegerField(default=0)
     review_report = models.JSONField(default=dict)
+    generation_run = models.ForeignKey(
+        "skills.SkillChainRun",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="case_generation_records",
+        verbose_name="用例生成父运行",
+    )
+    review_run = models.ForeignKey(
+        "skills.SkillChainRun",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="case_review_records",
+        verbose_name="用例评审父运行",
+    )
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.GENERATING, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

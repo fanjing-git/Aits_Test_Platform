@@ -4,7 +4,8 @@ import { useRouter } from 'vue-router'
 import WorkspaceShell from '../components/workspace/WorkspaceShell.vue'
 import { listProjects } from '../api/projects'
 import { generateCaseRecord } from '../api/caseGeneration'
-import { analyzeRequirementDocument, analyzeRequirementScreenshot, cancelRequirementAnalysis, clearRequirementAnalysis, confirmRequirementAnalysis, createRequirementDocument, deleteRequirementDocument, getRequirementAnalysisProgress, identifyRequirementLinkages, listRequirementDocuments, listRequirementModelOptions, parseRequirementDocument, reviewRequirementTestPoints, retryRequirementAnalysisRound } from '../api/requirements'
+import { analyzeRequirementDocument, analyzeRequirementScreenshot, cancelRequirementAnalysis, clearRequirementAnalysis, confirmRequirementAnalysis, createRequirementDocument, deleteRequirementDocument, decomposeRequirementDocument, getRequirementAnalysisProgress, identifyRequirementLinkages, listRequirementDocuments, listRequirementModelOptions, parseRequirementDocument, reviewRequirementDocument, reviewRequirementTestPoints, retryRequirementAnalysisRound } from '../api/requirements'
+import { getSkillChainRun } from '../api/skills'
 
 const projects = ref([]); const documents = ref([]); const selectedProject = ref(''); const selectedDocument = ref(null)
 const loading = ref(true); const busy = ref(false); const error = ref(''); const notice = ref(''); const formError = ref(''); const showForm = ref(false)
@@ -22,6 +23,12 @@ const MAX_REQUIREMENT_FILE_BYTES = 10 * 1024 * 1024
 const visibleTestPoints = computed(() => (selectedDocument.value?.latest_analysis?.test_points || []).slice(0, visibleTestPointCount.value))
 const reviewedTestPointIds = ref([]); const selectedTestPointIds = ref([]); const reviewedEvidenceIds = ref([]); const reviewedAnalysisItemIds = ref([]); const reviewedConflictIds = ref([])
 const testTypeLabels = { positive: '正向', negative: '异常', boundary: '边界', security: '安全', linkage: '联动', performance: '性能' }
+const conflictCollectionLabels = { modules: '功能模块', functions: '功能点', linkages: '联合场景', test_points: '测试点' }
+const conflictReasonLabels = { same_business_key_different_fields: '同一业务对象的字段内容不一致', same_id_different_semantics: '相同编号对应的业务含义发生变化' }
+const conflictReasonExplanations = { same_business_key_different_fields: '系统判断两轮结果描述的是同一个对象，但名称、描述、类型或其他内容出现差异，因此没有自动覆盖。', same_id_different_semantics: '后续轮次复用了已有编号，但实际业务含义发生变化，系统无法安全判断应保留哪一种含义。' }
+const conflictFieldLabels = { name: '名称', description: '描述', scenario: '场景', relationship: '关系', type: '测试类型', module_id: '所属模块', function_id: '所属功能点', source_function_id: '来源功能点', target_function_id: '目标功能点', from: '起始功能点', to: '目标功能点' }
+function conflictValueText(value) { if (value === null || value === undefined || value === '') return '未提供'; if (Array.isArray(value)) return value.length ? value.join('、') : '未提供'; if (typeof value === 'object') return JSON.stringify(value, null, 2); return String(value) }
+function conflictObjectTitle(item) { return item?.name || item?.description || item?.scenario || item?.relationship || '未命名分析对象' }
 const hasAnalysisRecords = computed(() => Boolean(selectedDocument.value?.latest_analysis || Object.keys(selectedDocument.value?.visual_analysis_report || {}).length))
 const qualityBanner = computed(() => {
   const report = selectedDocument.value?.latest_analysis?.coverage_report || {}
@@ -106,10 +113,39 @@ const analysisReview = computed(() => {
   const drops = Object.entries(report.analysis_comparison?.delta || {}).filter(([, value]) => value < 0).map(([key, value]) => `${key} ${value}`)
   const conflicts = (Array.isArray(report.conflicts) ? report.conflicts : []).map((item, index) => {
     const reviewId = String(item.id || `legacy-conflict-${index + 1}`)
-    const fieldSummary = (Array.isArray(item.fields) ? item.fields : []).map(field => `${field.field}: ${JSON.stringify(field.existing_value)} → ${JSON.stringify(field.incoming_value)}`).join('；')
-    return { ...item, reviewId, fieldSummary: fieldSummary || '同一业务对象的语义或标识发生变化' }
+    const collectionMap = { modules: moduleById, functions: functionById, linkages: linkageById, test_points: new Map((analysis.test_points || []).map(value => [String(value.id), value])) }
+    const existingObject = collectionMap[item.collection]?.get(String(item.entity_id))
+    const incomingObject = collectionMap[item.collection]?.get(String(item.incoming_id))
+    const fields = (Array.isArray(item.fields) ? item.fields : []).map(field => ({
+      ...field,
+      fieldLabel: conflictFieldLabels[field.field] || field.field || '其他字段',
+      existingText: conflictValueText(field.existing_value),
+      incomingText: conflictValueText(field.incoming_value),
+    }))
+    const primaryField = fields.find(field => ['name', 'description', 'scenario', 'relationship'].includes(field.field)) || fields[0]
+    const stableKeyText = Array.isArray(item.stable_key) ? item.stable_key.slice(1).filter(Boolean).join(' · ') : ''
+    const existingRounds = item.audit?.existing_source_rounds || primaryField?.existing_source_rounds || []
+    return {
+      ...item,
+      reviewId,
+      collectionLabel: conflictCollectionLabels[item.collection] || '分析对象',
+      reasonLabel: conflictReasonLabels[item.reason] || '分析内容存在差异',
+      reasonExplanation: conflictReasonExplanations[item.reason] || '多轮分析返回的同一对象存在差异，系统已保留先前结果并等待人工核对。',
+      targetLabel: conflictObjectTitle(existingObject) !== '未命名分析对象' ? conflictObjectTitle(existingObject) : (stableKeyText || item.entity_id || item.incoming_id || '未命名分析对象'),
+      fields,
+      primaryFieldLabel: primaryField?.fieldLabel || '主要内容',
+      existingSummary: primaryField?.existingText || conflictObjectTitle(existingObject),
+      incomingSummary: primaryField?.incomingText || (incomingObject ? conflictObjectTitle(incomingObject) : '本轮未提供'),
+      existingRoundLabel: existingRounds.length ? `之前结果来自第 ${existingRounds.join('、')} 轮` : '之前结果的来源轮次未知',
+      incomingRoundLabel: `本轮结果来自第 ${item.round || '?'} 轮`,
+      technicalSummary: `${item.collection || 'unknown'} · ${item.entity_id || item.incoming_id || 'unknown'} · ${item.reason || 'unknown'}`,
+    }
   })
   return { uncoveredEvidence, uncitedItems, reviewPoints, mappingGapGroups, drops, conflicts, totalEvidence: coverage.total_evidence || 0, coveredEvidence: coverage.covered_evidence || 0 }
+})
+const pendingConflictCount = computed(() => {
+  const reviewed = new Set(reviewedConflictIds.value.map(String))
+  return (analysisReview.value?.conflicts || []).filter(item => !reviewed.has(String(item.reviewId))).length
 })
 const reviewReady = computed(() => {
   if (!analysisReview.value) return false
@@ -149,8 +185,9 @@ const busyHint = computed(() => busyElapsed.value >= 30
 function startBusy(label) { busyLabel.value = label; busyElapsed.value = 0; clearInterval(busyTimer); busyTimer = window.setInterval(() => { busyElapsed.value += 1 }, 1000) }
 function stopBusy() { clearInterval(busyTimer); busyTimer = null }
 const canWrite = computed(() => ['admin', 'platform_admin', 'owner', 'manager'].includes(selectedProject.value ? projects.value.find(item => item.id === selectedProject.value)?.current_role : ''))
-const skillStatusText = { completed: '已完成', failed: '失败', needs_input: '等待补充' }
+const skillStatusText = { completed: '已完成', failed: '失败', needs_input: '等待补充', pending: '排队中', running: '执行中' }
 const roundStatusText = { pending: '待执行', running: '执行中', completed: '已完成', partial: '部分完成', failed: '失败', blocked: '未执行', not_configured: '未配置模型' }
+const stageStatusText = { pending: '待执行', passed: '已通过', completed: '已完成', needs_review: '待人工复核', complete: '已完成', partial: '部分完成', failed: '失败' }
 const taskStatusText = { pending: '排队中', running: '执行中', cancel_requested: '取消中', completed: '已完成', failed: '失败', cancelled: '已取消', timed_out: '已超时' }
 const taskIsActive = computed(() => ['pending', 'running', 'cancel_requested'].includes(activeTask.value?.status))
 
@@ -172,10 +209,15 @@ async function waitForRequirementTask(documentId, response) {
     activeTask.value = task
     if (!['pending', 'running', 'cancel_requested'].includes(task?.status)) {
       await loadDocuments()
+      const completedDocument = documents.value.find(item => item.id === documentId)
+      if (completedDocument?.analysis_run) {
+        const run = await getSkillChainRun(completedDocument.analysis_run)
+        skillExecution.value = { ...skillExecution.value, status: run.status, run_id: run.id, message: run.status === 'completed' ? '真实分析结果已写入需求分析记录' : (run.error_message || '父运行已保存') }
+      }
       if (task?.status === 'cancelled') return { ...response, task_runtime: task, __cancelled: true }
       const terminalError = ['failed', 'timed_out'].includes(task?.status)
       if (terminalError) throw new Error(`后台任务${taskStatusText[task.status] || '未完成'}：${task.error_code || '请查看任务详情后重试。'}`)
-      return documents.value.find(item => item.id === documentId) || response
+      return completedDocument || response
     }
   }
   throw new Error('后台任务等待超过30分钟，请刷新页面查看最终状态。')
@@ -237,7 +279,10 @@ async function markSelectedTestPointsReviewed() { if (!selectedDocument.value ||
 function selectAllReviewPoints() { selectedTestPointIds.value = pendingReviewPoints.value.map(item => String(item.id)) }
 function clearReviewPointSelection() { selectedTestPointIds.value = [] }
 function syncReviewState(document) { const confirmation = document?.latest_analysis?.coverage_report?.manual_confirmation || {}; reviewedTestPointIds.value = (confirmation.reviewed_test_point_ids || []).map(String); reviewedConflictIds.value = (confirmation.reviewed_conflict_ids || []).map(String); selectedTestPointIds.value = [] }
+function focusConflictReview() { const target = document.getElementById('requirement-conflict-review'); if (!target) return; const top = target.getBoundingClientRect().top + window.scrollY - 16; window.scrollTo({ top: Math.max(0, top), behavior: 'auto' }) }
 async function retryLastAction() { if (lastAction.value && !busy.value) await action(lastAction.value.fn, lastAction.value.success) }
+async function reviewRequirement() { await action(reviewRequirementDocument, '需求评审已通过，当前版本可进行需求拆解') }
+async function decomposeRequirement() { await action(decomposeRequirementDocument, '需求拆解完成，已生成可追溯产物') }
 async function removeDocument() { if (!selectedDocument.value || !window.confirm('确定删除当前需求文档吗？')) return; busy.value = true; try { await deleteRequirementDocument(selectedDocument.value.id); selectedDocument.value = null; notice.value = '需求文档已删除。'; await loadDocuments() } catch (err) { error.value = explain(err, '删除失败，请重试。') } finally { busy.value = false } }
 async function clearAnalysisRecords() { if (!selectedDocument.value || !window.confirm('确定清除当前需求的分析记录吗？需求原文、文件和解析证据会保留，已有用例生成记录不会删除。最近一次分析摘要会保留用于下一次结果稳定性比较。')) return; busy.value = true; error.value = ''; notice.value = ''; try { const result = await clearRequirementAnalysis(selectedDocument.value.id); screenshotReport.value = null; skillExecution.value = null; notice.value = `分析记录已清除（${result.cleared_analysis_count || 0} 条），需求原文和解析证据已保留${result.analysis_baseline_preserved ? '，最近一次分析基线也已保留用于复核' : ''}。`; await loadDocuments() } catch (err) { error.value = explain(err, '清除分析记录失败，请重试。') } finally { busy.value = false } }
 function loadMoreTestPoints() { visibleTestPointCount.value += testPointPageSize }
@@ -260,9 +305,10 @@ onMounted(refresh)
     <div v-if="selectedDocument && hasAnalysisRecords" class="requirement-record-toolbar"><button class="danger-action" :disabled="busy || !canWrite" @click="clearAnalysisRecords">清除分析记录</button><small>仅清除分析结果，需求原文、文件和解析证据会保留。</small></div>
     <div v-if="selectedDocument?.source_type === 'screenshot'" class="requirement-notice" role="status"><button class="secondary-action" :disabled="busy || !canWrite || (!selectedDocument.file_path && !selectedDocument.content_text)" @click="action(analyzeRequirementScreenshot, '截图视觉分析完成')">{{ screenshotReport?.analysis_method === 'model_verified' ? '重新视觉分析' : '截图视觉分析' }}</button><span v-if="screenshotReport"> {{ screenshotReport.analysis_method === 'model_verified' ? '模型视觉结果' : 'OCR 基线结果' }} · 证据 {{ screenshotReport.text_blocks?.length || 0 }} 条 · 置信度 {{ Math.round((screenshotReport.confidence || 0) * 100) }}%<span v-if="screenshotReport.needs_confirmation"> · 待人工确认</span></span><ul v-if="screenshotReport?.test_points?.length"><li v-for="item in screenshotReport.test_points" :key="item.id">{{ item.description }}</li></ul></div>
     <div v-if="selectedDocument && modelOptions" class="requirement-model-choice requirement-model-choice--top"><label><span>{{ selectedDocument.source_type === 'screenshot' ? '视觉分析模型' : '需求分析模型' }}</span><select v-model="modelChoice" :disabled="modelOptionsLoading || busy"><option value="">继承平台全局默认</option><option v-for="model in modelOptions.models" :key="model.id" :value="String(model.id)">{{ model.name }} · {{ model.model_name }}（{{ model.model_type_label }}）</option></select></label><small v-if="modelOptions.effective_model">当前生效：{{ modelOptions.effective_model.name }} · {{ modelOptions.effective_model.model_name }}（{{ modelOptions.effective_source === 'global' ? '平台全局默认' : '功能绑定' }}）</small><small v-if="modelOptions.route_error" class="requirement-error">{{ modelOptions.route_error }}</small><small>本次选择只对当前分析生效；有视觉模型时执行真实视觉结构化调用，未配置时明确显示 OCR 基线结果。</small></div>
-    <div class="page-title-row"><div><p class="workspace-eyebrow">REQUIREMENT INTELLIGENCE</p><h1>需求智能分析</h1><p class="workspace-lead">导入需求文档，逐步完成解析、功能拆解、联合识别和测试点确认。</p></div><button class="primary-action" :disabled="loading" @click="openCreate">＋ 导入需求</button></div>
+    <div class="page-title-row"><div><p class="workspace-eyebrow">需求分析工作台</p><h1>需求智能分析</h1><p class="workspace-lead">导入需求文档，逐步完成解析、功能拆解、联合识别和测试点确认。</p></div><button class="primary-action" :disabled="loading" @click="openCreate">＋ 导入需求</button></div>
     <div v-if="notice" class="requirement-notice" role="status">{{ notice }}</div><div v-if="skillExecution" class="requirement-skill-status" role="status">本次自动调用：<b>{{ skillExecution.skill }}</b> · v{{ skillExecution.version }} · {{ skillStatusText[skillExecution.status] || skillExecution.status }}<span v-if="skillExecution.message"> · {{ skillExecution.message }}</span></div><div v-if="selectedDocument?.latest_analysis?.coverage_report?.model_route?.candidates?.length" class="requirement-source-meta">实际模型：{{ selectedDocument.latest_analysis.coverage_report.model_route.candidates[0].name }} · 调用阶段：{{ selectedDocument.latest_analysis.coverage_report.call_stage || '需求分析' }} · {{ modelVerificationLabel }}</div><div v-if="qualityBanner" :class="qualityBanner.className" role="status"><b>{{ qualityBanner.title }}</b> · {{ qualityBanner.detail }}</div><section v-if="analysisProgress || selectedDocument?.latest_analysis?.coverage_report?.round_count" class="requirement-round-panel" aria-labelledby="requirement-round-title"><div class="requirement-round-heading"><div><h2 id="requirement-round-title">五轮递进复核</h2><p>语义轮次与技术分段分别统计；只有五轮全部完成并通过质量门禁，结果才可进入人工审核。</p></div><span class="requirement-round-status">{{ roundStatusText[analysisProgress?.round_progress?.status || selectedDocument?.latest_analysis?.coverage_report?.round_execution_status] || '待执行' }}</span></div><div v-if="analysisProgressError" class="requirement-error" role="alert">{{ analysisProgressError }}</div><div v-if="analysisProgress?.round_progress" class="requirement-round-summary">分析轮次：第 {{ analysisProgress.round_progress.current_round || 0 }} / {{ analysisProgress.round_progress.total_rounds || 5 }} 轮 · 实际调用 {{ selectedDocument?.latest_analysis?.coverage_report?.total_calls || 0 }} 次</div><div class="requirement-round-list"><article v-for="round in (analysisProgress?.rounds || selectedDocument?.latest_analysis?.coverage_report?.rounds || [])" :key="round.round" class="requirement-round-card"><header><b>第 {{ round.round }} 轮 · {{ round.name }}</b><span>{{ roundStatusText[round.status] || round.status }}</span></header><p>{{ round.focus }}</p><small>分段 {{ round.completed_segments || 0 }} / {{ round.segment_count || 0 }} · 调用 {{ round.calls || 0 }} · 新增 {{ round.added || 0 }} · 修正 {{ round.updated || 0 }} · 重复 {{ round.duplicate || 0 }} · 冲突 {{ round.conflict || 0 }} · 未覆盖证据 {{ (round.uncovered_evidence || []).length }}</small><div v-if="round.failure_reason" class="requirement-error">{{ round.failure_reason }}<button v-if="['failed', 'partial', 'blocked'].includes(round.status) && canWrite" class="text-action" :disabled="busy || roundRetryBusy" @click="retryRound(round)">重试本轮</button></div></article></div><details v-if="analysisProgress?.history?.length > 1" class="requirement-round-history"><summary>查看历史轮次轨迹（{{ analysisProgress.history.length }} 次）</summary><div v-for="item in analysisProgress.history" :key="item.id">{{ item.created_at }} · {{ roundStatusText[item.round_execution_status] || item.round_execution_status }} · 完成 {{ item.completed_rounds }} / {{ item.round_count }} 轮 · 调用 {{ item.total_calls || 0 }} 次</div></details></section><div v-if="error" class="requirement-error" role="alert">{{ error }}<span v-if="failureMeta?.code">（错误码：{{ failureMeta.code }}）</span><button v-if="failureMeta?.retryable && lastAction" class="text-action" :disabled="busy" @click="retryLastAction">重试当前操作</button><button class="text-action" @click="refresh">刷新页面</button></div>
-    <section v-if="analysisReview" class="requirement-review-panel" aria-labelledby="analysis-review-title">
+     <section v-if="analysisReview?.conflicts.length" class="requirement-conflict-alert" role="status" aria-live="polite"><div><span class="requirement-conflict-alert-badge">需要人工核对</span><div><h2>发现 {{ analysisReview.conflicts.length }} 条分析内容需要核对</h2><p>这是多轮模型结果之间的差异，不代表需求原文一定有错误。系统已经保留之前的有效结果，请逐条查看新旧内容和来源轮次。</p></div></div><div class="requirement-conflict-alert-actions"><b>已核对 {{ analysisReview.conflicts.length - pendingConflictCount }} / {{ analysisReview.conflicts.length }}</b><button class="primary-action" type="button" @click="focusConflictReview">查看并逐条核对</button></div></section>
+     <section v-if="analysisReview" class="requirement-review-panel" aria-labelledby="analysis-review-title">
       <div class="requirement-review-heading"><div><h2 id="analysis-review-title">审核最终需求分析结果</h2><p>这里审核的不是需求文档标题，也不是功能标题，而是大模型根据本文档产出的“模块 → 功能点 → 测试点”结果。最终测试点是主要审核对象；证据列表用于判断分析是否有原文依据。</p></div><span class="requirement-review-status">{{ analysisConfirmed ? '已确认' : '待确认' }}</span></div>
       <div class="requirement-review-scope"><span>需求文档（仅用于定位）</span><b>→</b><span>原文证据（依据）</span><b>→</b><span>功能模块 / 功能点（分析结果）</span><b>→</b><span>最终测试点（审核对象）</span><b>→</b><span>测试用例（审核通过后生成）</span></div>
       <div v-if="analysisReview.mappingGapGroups.length" class="requirement-review-blocker"><b>当前结果不能直接审核</b><span>这份分析结果缺少模块或功能点名称、测试点描述、归属关系或测试类型，不需要你手工填写编号。请点击下方“重新执行深度分析”，系统会重新生成可读且完整的审核清单。</span></div>
@@ -281,13 +327,18 @@ onMounted(refresh)
         <p>以下是模型实际产出的功能点、联合场景和测试点，不是让你手工填写的 ID。它们没有形成可靠的“模块 → 功能点 → 测试点”归属，或没有标注测试类型，不能通过勾选确认，请重新执行深度分析。</p>
         <div class="requirement-review-mapping-groups"><section v-for="group in analysisReview.mappingGapGroups" :key="group.label" class="requirement-review-mapping-group"><header><b>{{ group.label }}</b><span>{{ group.items.length }} 项</span></header><div class="requirement-review-object-list"><div v-for="item in group.items" :key="item.id" class="requirement-review-object-card"><b>{{ item.title }}</b><small>{{ item.detail }}</small></div></div></section></div>
       </div>
-       <section v-if="analysisReview.conflicts.length" class="requirement-review-conflicts" aria-label="五轮合并冲突人工复核">
-        <h3>五轮合并冲突（必须人工复核）<small>{{ analysisReview.conflicts.length }} 条</small></h3>
-        <p class="requirement-review-description">系统已保留先前有效值，没有静默覆盖。请逐条核对新旧值及来源轮次；勾选后才允许确认分析结果。</p>
-        <ul><li v-for="item in analysisReview.conflicts" :key="item.reviewId"><label class="requirement-review-check"><input type="checkbox" :value="item.reviewId" v-model="reviewedConflictIds"><span><b>{{ item.collection }} · {{ item.entity_id || item.incoming_id || '未命名对象' }}</b> · 第{{ item.round || '?' }}轮 · {{ item.reason }}<small>{{ item.fieldSummary }}</small></span></label></li></ul>
+       <section v-if="analysisReview.conflicts.length" id="requirement-conflict-review" class="requirement-review-conflicts" aria-labelledby="requirement-conflict-review-title">
+        <div class="requirement-conflict-heading"><div><h3 id="requirement-conflict-review-title">分析结果差异核对<small>{{ analysisReview.conflicts.length }} 条待核对</small></h3><p class="requirement-review-description">这些不是需求原文错误，而是不同分析轮次对同一分析对象给出了不同内容。系统默认保留之前的结果；请查看新旧内容后勾选“已核对”。</p></div><span class="requirement-conflict-progress">已核对 {{ analysisReview.conflicts.length - pendingConflictCount }} / {{ analysisReview.conflicts.length }}</span></div>
+        <ol class="requirement-conflict-list"><li v-for="item in analysisReview.conflicts" :key="item.reviewId" class="requirement-conflict-item"><div class="requirement-conflict-item-heading"><label class="requirement-review-check"><input type="checkbox" :aria-label="`已核对${item.collectionLabel}${item.targetLabel}`" :value="item.reviewId" v-model="reviewedConflictIds"><span><b>{{ item.collectionLabel }}：{{ item.targetLabel }}</b><small>{{ item.reasonLabel }}</small></span></label><span class="requirement-conflict-rounds">{{ item.existingRoundLabel }} · {{ item.incomingRoundLabel }}</span></div><p class="requirement-conflict-explanation">{{ item.reasonExplanation }}</p><div class="requirement-conflict-diff"><article><span>之前保留的结果</span><b>{{ item.existingSummary }}</b></article><article><span>本轮新结果</span><b>{{ item.incomingSummary }}</b></article></div><details class="requirement-conflict-details"><summary>查看字段差异和技术来源</summary><div v-if="item.fields.length" class="requirement-conflict-fields"><div v-for="field in item.fields" :key="field.field" class="requirement-conflict-field"><b>{{ field.fieldLabel }}</b><span>{{ field.existingText }}</span><i>→</i><span>{{ field.incomingText }}</span></div></div><p v-else class="requirement-empty requirement-empty--compact">没有可展开的字段差异，请结合对象名称和来源轮次核对。</p><small>{{ item.technicalSummary }}</small></details></li></ol>
+        <p class="requirement-conflict-footnote">勾选只表示“已核对”，不会自动采用新结果；全部冲突核对完成后，才允许确认整份分析结果。</p>
        </section>
        <p v-if="analysisReview.drops.length" class="requirement-error">相对上一版数量减少：{{ analysisReview.drops.join('、') }}。请重点核对本次减少的模块、功能点和测试点。</p>
       <div class="requirement-review-actions"><button class="primary-action" :disabled="busy || !canWrite || (!selectedTestPointIds.length && !reviewedTestPointIds.length)" @click="confirmAnalysis">{{ confirmButtonLabel }}</button><button class="secondary-action" :disabled="busy || !canWrite" @click="action(analyzeRequirementDocument, '需求深度分析完成')">重新执行深度分析</button><small>{{ analysisReview.mappingGapGroups.length ? '请先重新执行深度分析，补齐模块归属和测试类型后再审核。' : reviewReady ? '审核清单已逐项确认，确认后可生成用例。' : '可单独勾选测试点后确认；全部清单完成后才会把整份分析标记为最终确认。' }} 确认不会删除需求原文或证据。</small></div>
+    </section>
+    <section v-if="selectedDocument?.latest_analysis" class="requirement-stage-panel" aria-label="需求分析技能链">
+      <div><b>需求分析 → 需求评审 → 需求拆解</b><small>评审通过后才允许拆解；拆解产物只用于后续测试点阶段，不会直接生成测试用例。</small></div>
+      <div class="requirement-actions"><button class="secondary-action" :disabled="busy || !canWrite" @click="reviewRequirement">{{ selectedDocument.latest_analysis.review_status === 'passed' ? '重新评审当前版本' : '执行需求评审' }}</button><button class="primary-action" :disabled="busy || !canWrite || selectedDocument.latest_analysis.review_status !== 'passed'" @click="decomposeRequirement">{{ selectedDocument.latest_analysis.decomposition_status === 'completed' ? '重新拆解当前版本' : '执行需求拆解' }}</button></div>
+      <small>当前状态：分析 {{ stageStatusText[selectedDocument.latest_analysis.quality_status] || '待确认' }} · 评审 {{ stageStatusText[selectedDocument.latest_analysis.review_status || 'pending'] || '待执行' }} · 拆解 {{ stageStatusText[selectedDocument.latest_analysis.decomposition_status || 'pending'] || '待执行' }}</small>
     </section>
     <div class="requirement-toolbar"><label>项目<select v-model="selectedProject" @change="loadDocuments"><option v-for="item in projects" :key="item.id" :value="item.id">{{ item.name }}</option></select></label><button class="secondary-action" @click="refresh">刷新</button></div>
     <section v-if="loading" class="state-panel"><span class="loading-ring"></span><b>正在加载需求文档</b></section>

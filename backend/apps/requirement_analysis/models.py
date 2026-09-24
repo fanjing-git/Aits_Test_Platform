@@ -33,6 +33,14 @@ class RequirementDocument(models.Model):
     parse_warnings = models.JSONField("解析警告", default=list, validators=[validate_list])
     visual_analysis_report = models.JSONField("视觉分析报告", default=dict, validators=[validate_object])
     analysis_baseline = models.JSONField("分析稳定性基线", default=dict, validators=[validate_object])
+    analysis_run = models.ForeignKey(
+        "skills.SkillChainRun",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="requirement_analysis_documents",
+        verbose_name="需求分析父运行",
+    )
     status = models.CharField("状态", max_length=20, choices=Status.choices, default=Status.UPLOADED, db_index=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="created_requirement_documents", verbose_name="创建者")
     created_at = models.DateTimeField("创建时间", auto_now_add=True)
@@ -53,6 +61,12 @@ class RequirementAnalysis(models.Model):
         NEEDS_REVIEW = "needs_review", "待复核"
         FAILED = "failed", "失败"
 
+    class StageStatus(models.TextChoices):
+        PENDING = "pending", "待执行"
+        PASSED = "passed", "已通过"
+        FAILED = "failed", "失败"
+        COMPLETED = "completed", "已完成"
+
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     document = models.ForeignKey(RequirementDocument, on_delete=models.CASCADE, related_name="analyses", verbose_name="需求文档")
     modules = models.JSONField("功能模块", default=list, validators=[validate_list])
@@ -63,6 +77,27 @@ class RequirementAnalysis(models.Model):
     source_fingerprint = models.CharField("源指纹", max_length=64, blank=True, default="", db_index=True)
     analysis_fingerprint = models.CharField("分析指纹", max_length=64, blank=True, default="", db_index=True)
     quality_status = models.CharField("完整性状态", max_length=20, choices=QualityStatus.choices, default=QualityStatus.NEEDS_REVIEW, db_index=True)
+    review_status = models.CharField("需求评审状态", max_length=20, choices=StageStatus.choices, default=StageStatus.PENDING, db_index=True)
+    review_report = models.JSONField("需求评审报告", default=dict, validators=[validate_object])
+    review_run = models.ForeignKey(
+        "skills.SkillChainRun",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="requirement_review_analyses",
+        verbose_name="需求评审父运行",
+    )
+    decomposition_status = models.CharField("需求拆解状态", max_length=20, choices=StageStatus.choices, default=StageStatus.PENDING, db_index=True)
+    decomposition = models.JSONField("需求拆解产物", default=dict, validators=[validate_object])
+    decomposition_fingerprint = models.CharField("需求拆解指纹", max_length=64, blank=True, default="", db_index=True)
+    decomposition_run = models.ForeignKey(
+        "skills.SkillChainRun",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="requirement_decomposition_analyses",
+        verbose_name="需求拆解父运行",
+    )
     created_at = models.DateTimeField("创建时间", auto_now_add=True)
     class Meta:
         verbose_name = "需求分析结果"; verbose_name_plural = "需求分析结果"; ordering = ("-created_at",)

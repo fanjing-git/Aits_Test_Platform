@@ -1,8 +1,11 @@
 """Transactional services for requirement-analysis record lifecycle actions."""
 
+import hashlib
+import json
 from typing import Any
 
 from django.db import transaction
+from django.utils import timezone
 
 from apps.requirement_analysis.models import RequirementAnalysis, RequirementDocument
 from apps.requirement_analysis.stability import analysis_baseline, analysis_mapping_gaps, analysis_review_state, count_payload
@@ -189,6 +192,126 @@ class RequirementAnalysisRecordService:
         analysis.coverage_report = report
         analysis.save(update_fields=("coverage_report",))
         return locked_document
+
+    @transaction.atomic
+    def review_latest_analysis(self, document: RequirementDocument) -> RequirementAnalysis:
+        """Run the persisted requirement-review Skill against the latest analysis.
+
+        This review is deliberately separate from test-point approval. It validates
+        that the analysis version has enough traceability for decomposition, then
+        freezes the reviewed source fingerprint used by the next stage.
+        """
+        locked_document = RequirementDocument.objects.select_for_update().get(pk=document.pk)
+        analysis = locked_document.analyses.select_for_update().order_by("-created_at").first()
+        if analysis is None:
+            raise RequirementAnalysisConfirmationError("需求文档尚未完成需求分析，不能进行需求评审。")
+        if analysis.quality_status in {
+            RequirementAnalysis.QualityStatus.PARTIAL,
+            RequirementAnalysis.QualityStatus.FAILED,
+        }:
+            raise RequirementAnalysisConfirmationError("当前分析不是可评审的完整版本，请先恢复需求分析。")
+        mapping_gaps = analysis_mapping_gaps({
+            "modules": analysis.modules,
+            "functions": analysis.functions,
+            "linkages": analysis.linkages,
+            "test_points": analysis.test_points,
+        })
+        issues: list[dict[str, Any]] = []
+        for category, values in mapping_gaps.items():
+            for value in values:
+                issues.append({"code": category, "item_id": str(value), "message": "结构映射不完整。"})
+        functions = [item for item in (analysis.functions or []) if isinstance(item, dict)]
+        acceptance_count = sum(bool(item.get("acceptance_criteria")) for item in functions)
+        flow_count = len((analysis.coverage_report or {}).get("data_flows") or [])
+        if not functions:
+            issues.append({"code": "empty_functions", "item_id": "", "message": "没有可追溯的功能点。"})
+        if acceptance_count != len(functions):
+            issues.append({"code": "acceptance_criteria", "item_id": "", "message": "存在功能点缺少验收条件。"})
+        report = {
+            "schema_version": "requirement-review-v1",
+            "source_analysis_id": str(analysis.pk),
+            "source_fingerprint": analysis.analysis_fingerprint,
+            "status": "failed" if issues else "passed",
+            "reviewed_counts": {
+                "modules": len(analysis.modules or []),
+                "functions": len(functions),
+                "linkages": len(analysis.linkages or []),
+                "data_flows": flow_count,
+                "acceptance_conditions": acceptance_count,
+            },
+            "issues": issues,
+            "reviewed_at": timezone.now().isoformat(),
+        }
+        analysis.review_report = report
+        analysis.review_status = RequirementAnalysis.StageStatus.PASSED if not issues else RequirementAnalysis.StageStatus.FAILED
+        analysis.decomposition_status = RequirementAnalysis.StageStatus.PENDING
+        analysis.decomposition = {}
+        analysis.decomposition_fingerprint = ""
+        analysis.save(update_fields=("review_status", "review_report", "decomposition_status", "decomposition", "decomposition_fingerprint"))
+        return analysis
+
+    @transaction.atomic
+    def decompose_reviewed_analysis(self, document: RequirementDocument) -> RequirementAnalysis:
+        """Create a traceable decomposition only from a passed review snapshot."""
+        locked_document = RequirementDocument.objects.select_for_update().get(pk=document.pk)
+        analysis = locked_document.analyses.select_for_update().order_by("-created_at").first()
+        if analysis is None or analysis.review_status != RequirementAnalysis.StageStatus.PASSED:
+            raise RequirementAnalysisConfirmationError("需求拆解只能消费已通过需求评审的版本。")
+        review_report = dict(analysis.review_report or {})
+        if review_report.get("source_analysis_id") != str(analysis.pk) or review_report.get("source_fingerprint") != analysis.analysis_fingerprint:
+            raise RequirementAnalysisConfirmationError("需求评审版本已失效，请重新执行需求评审。")
+        modules = [dict(item) for item in (analysis.modules or []) if isinstance(item, dict)]
+        functions = [dict(item) for item in (analysis.functions or []) if isinstance(item, dict)]
+        module_ids = {str(item.get("id")) for item in modules if item.get("id")}
+        traceable_functions = [item for item in functions if str(item.get("module_id")) in module_ids]
+        flows = []
+        for index, function in enumerate(traceable_functions):
+            flows.append({
+                "id": f"flow-{index + 1}",
+                "steps": [function.get("id")],
+                "module_id": function.get("module_id"),
+                "name": function.get("name") or f"业务流程 {index + 1}",
+                "source_function_ids": [function.get("id")],
+            })
+        flows.extend({
+            "id": f"flow-link-{index + 1}",
+            "steps": [item.get("from"), item.get("to")],
+            "name": item.get("evidence") or f"功能联动 {index + 1}",
+            "relationship": item.get("relationship", "related"),
+            "source_linkage": item.get("id") or f"linkage-{index + 1}",
+        } for index, item in enumerate(analysis.linkages or []) if isinstance(item, dict))
+        data_names: set[str] = set()
+        data_objects = []
+        for item in (analysis.coverage_report or {}).get("data_flows", []) or []:
+            if not isinstance(item, dict):
+                continue
+            for name in item.get("data", []) or []:
+                name = str(name).strip()
+                if name and name not in data_names:
+                    data_names.add(name)
+                    data_objects.append({"id": f"data-{len(data_objects) + 1}", "name": name, "source_flow": item.get("from"), "target_flow": item.get("to")})
+        acceptance_conditions = [
+            {"id": f"acceptance-{index + 1}", "function_id": item.get("id"), "conditions": list(item.get("acceptance_criteria") or []), "evidence_ids": list(item.get("evidence_ids") or [])}
+            for index, item in enumerate(traceable_functions)
+        ]
+        result = {
+            "schema_version": "requirement-decomposition-v1",
+            "source_analysis_id": str(analysis.pk),
+            "source_fingerprint": analysis.analysis_fingerprint,
+            "review_run_id": str(analysis.review_run_id or ""),
+            "modules": modules,
+            "functions": traceable_functions,
+            "business_flows": flows,
+            "data_objects": data_objects,
+            "acceptance_conditions": acceptance_conditions,
+        }
+        fingerprint = hashlib.sha256(json.dumps(result, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        result["decomposition_fingerprint"] = fingerprint
+        analysis.decomposition = result
+        analysis.decomposition_fingerprint = fingerprint
+        analysis.decomposition_status = RequirementAnalysis.StageStatus.COMPLETED
+        analysis.save(update_fields=("decomposition", "decomposition_fingerprint", "decomposition_status"))
+        return analysis
 
 
 __all__ = ["RequirementAnalysisConfirmationError", "RequirementAnalysisRecordService"]

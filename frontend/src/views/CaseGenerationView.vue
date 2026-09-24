@@ -5,6 +5,7 @@ import WorkspaceShell from '../components/workspace/WorkspaceShell.vue'
 import { listProjects } from '../api/projects'
 import { listRequirementDocuments } from '../api/requirements'
 import { cancelCaseGeneration, deleteCaseGeneration, generateCaseRecord, getCaseGeneration, listCaseGenerations, listCaseGenerationModelOptions, reviewCaseRecord, saveReviewedCases, selectCaseRecord } from '../api/caseGeneration'
+import { getSkillChainRun } from '../api/skills'
 
 const projects = ref([])
 const documents = ref([])
@@ -288,6 +289,11 @@ async function waitForCaseTask(initialRecord) {
     selectedRecord.value = latest
     const runtime = activeTaskForRecord(latest) || latest.coverage_report?.task_runtime || latest.review_report?.task_runtime
     if (!['pending', 'running', 'cancel_requested'].includes(runtime?.status)) {
+      const runId = latest.generation_run || latest.review_run
+      if (runId) {
+        const run = await getSkillChainRun(runId)
+        skillExecution.value = { ...skillExecution.value, status: run.status, run_id: run.id, message: run.status === 'completed' ? '真实业务产物已写入记录' : (run.error_message || '父运行已保存') }
+      }
       if (['failed', 'cancelled', 'timed_out'].includes(runtime?.status)) throw new Error(`后台任务${taskStatusText[runtime.status] || '未完成'}：${runtime.error_code || '请查看任务详情后重试。'}`)
       return latest
     }

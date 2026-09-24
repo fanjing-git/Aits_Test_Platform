@@ -12,6 +12,8 @@ from core.task_state import TaskCancelled, task_runtime, utc_now
 from apps.case_generation.generator import CaseGenerationError, generate_document_cases
 from apps.case_generation.models import CaseGenerationRecord
 from apps.case_generation.reviewer import CaseReviewError, review_generation_record
+from apps.skills.business_execution import BusinessSkillRunService
+from apps.skills.models import SkillChainRun
 
 
 def _runtime(record: CaseGenerationRecord, task_id: str, report_name: str) -> dict[str, Any]:
@@ -50,11 +52,13 @@ def _callback(record_id: str, task_id: str, report_name: str):
     return callback
 
 
-def _cancel_check(record_id: str, task_id: str, report_name: str) -> bool:
+def _cancel_check(record_id: str, task_id: str, report_name: str, business_run_id: str | None = None) -> bool:
     """Read the durable cancellation marker from the relevant report."""
     record = CaseGenerationRecord.objects.get(pk=record_id)
     runtime = _runtime(record, task_id, report_name)
-    return runtime.get("cancel_requested") is True
+    return runtime.get("cancel_requested") is True or bool(
+        business_run_id and BusinessSkillRunService.cancel_requested(business_run_id)
+    )
 
 
 def _finish(record: CaseGenerationRecord, report_name: str, runtime: dict[str, Any], *, status: str, error_code: str = "") -> None:
@@ -77,7 +81,13 @@ def _finish(record: CaseGenerationRecord, report_name: str, runtime: dict[str, A
     reject_on_worker_lost=True,
     max_retries=3,
 )
-def run_case_generation(self, record_id: str, preferred_model_name: str | None = None, task_id: str | None = None) -> dict[str, Any]:
+def run_case_generation(
+    self,
+    record_id: str,
+    preferred_model_name: str | None = None,
+    task_id: str | None = None,
+    business_run_id: str | None = None,
+) -> dict[str, Any]:
     """Execute one queued five-round generation task."""
     del self
     task_id = str(task_id or uuid4().hex)
@@ -85,32 +95,51 @@ def run_case_generation(self, record_id: str, preferred_model_name: str | None =
     runtime = _runtime(record, task_id, "coverage_report")
     runtime.update({"status": "running", "current_step": "用例生成执行中", "updated_at": utc_now()})
     _write(record, "coverage_report", runtime)
+    business_service = BusinessSkillRunService()
+    business_run = None
+    if business_run_id:
+        business_run = business_service.mark_running(SkillChainRun.objects.get(pk=business_run_id), "case_generation")
     try:
         generated = generate_document_cases(
             record.document,
             preferred_model_name=preferred_model_name,
             record=record,
             progress_callback=_callback(str(record.pk), task_id, "coverage_report"),
-            cancel_check=lambda: _cancel_check(str(record.pk), task_id, "coverage_report"),
+            cancel_check=lambda: _cancel_check(str(record.pk), task_id, "coverage_report", business_run_id),
         )
         generated.refresh_from_db()
         _finish(generated, "coverage_report", _runtime(generated, task_id, "coverage_report"), status="completed")
+        if business_run is not None:
+            business_service.complete(
+                business_run,
+                "case_generation",
+                {"record_id": str(generated.pk), "total_cases": generated.total_cases, "rounds": generated.rounds},
+                artifact_ref={"type": "case_generation_record", "id": str(generated.pk)},
+            )
         return {"status": "completed", "record_id": str(record.pk), "task_id": task_id}
     except TaskCancelled:
         record.refresh_from_db()
         _finish(record, "coverage_report", _runtime(record, task_id, "coverage_report"), status="cancelled")
+        if business_run is not None:
+            business_service.fail(business_run, "case_generation", "cancelled", "用例生成已取消，未产生可消费的完整用例集。")
         return {"status": "cancelled", "record_id": str(record.pk), "task_id": task_id}
     except SoftTimeLimitExceeded:
         record.refresh_from_db()
         _finish(record, "coverage_report", _runtime(record, task_id, "coverage_report"), status="timed_out", error_code="task_timeout")
+        if business_run is not None:
+            business_service.fail(business_run, "case_generation", "task_timeout", "用例生成任务超时。")
         return {"status": "timed_out", "record_id": str(record.pk), "task_id": task_id}
     except CaseGenerationError as exc:
         record.refresh_from_db()
         _finish(record, "coverage_report", _runtime(record, task_id, "coverage_report"), status="failed", error_code="generation_failed")
+        if business_run is not None:
+            business_service.fail(business_run, "case_generation", "generation_failed", str(exc))
         return {"status": "failed", "record_id": str(record.pk), "task_id": task_id, "error_code": "generation_failed", "detail": str(exc)[:200]}
     except Exception:
         record.refresh_from_db()
         _finish(record, "coverage_report", _runtime(record, task_id, "coverage_report"), status="failed", error_code="task_error")
+        if business_run is not None:
+            business_service.fail(business_run, "case_generation", "task_error", "用例生成任务失败。")
         return {"status": "failed", "record_id": str(record.pk), "task_id": task_id, "error_code": "task_error"}
 
 
@@ -122,7 +151,13 @@ def run_case_generation(self, record_id: str, preferred_model_name: str | None =
     reject_on_worker_lost=True,
     max_retries=3,
 )
-def run_case_review(self, record_id: str, preferred_model_name: str | None = None, task_id: str | None = None) -> dict[str, Any]:
+def run_case_review(
+    self,
+    record_id: str,
+    preferred_model_name: str | None = None,
+    task_id: str | None = None,
+    business_run_id: str | None = None,
+) -> dict[str, Any]:
     """Execute one queued five-round review task."""
     del self
     task_id = str(task_id or uuid4().hex)
@@ -132,31 +167,50 @@ def run_case_review(self, record_id: str, preferred_model_name: str | None = Non
     record.status = CaseGenerationRecord.Status.REVIEWING
     record.save(update_fields=("status",))
     _write(record, "review_report", runtime)
+    business_service = BusinessSkillRunService()
+    business_run = None
+    if business_run_id:
+        business_run = business_service.mark_running(SkillChainRun.objects.get(pk=business_run_id), "case_review")
     try:
         reviewed = review_generation_record(
             record,
             preferred_model_name=preferred_model_name,
             progress_callback=_callback(str(record.pk), task_id, "review_report"),
-            cancel_check=lambda: _cancel_check(str(record.pk), task_id, "review_report"),
+            cancel_check=lambda: _cancel_check(str(record.pk), task_id, "review_report", business_run_id),
         )
         reviewed.refresh_from_db()
         _finish(reviewed, "review_report", _runtime(reviewed, task_id, "review_report"), status="completed")
+        if business_run is not None:
+            business_service.complete(
+                business_run,
+                "case_review",
+                {"record_id": str(reviewed.pk), "review_rounds": reviewed.review_rounds, "issue_count": len((reviewed.review_report or {}).get("issues", []))},
+                artifact_ref={"type": "case_review", "id": str(reviewed.pk)},
+            )
         return {"status": "completed", "record_id": str(record.pk), "task_id": task_id}
     except TaskCancelled:
         record.refresh_from_db()
         _finish(record, "review_report", _runtime(record, task_id, "review_report"), status="cancelled")
+        if business_run is not None:
+            business_service.fail(business_run, "case_review", "cancelled", "用例评审已取消。")
         return {"status": "cancelled", "record_id": str(record.pk), "task_id": task_id}
     except SoftTimeLimitExceeded:
         record.refresh_from_db()
         _finish(record, "review_report", _runtime(record, task_id, "review_report"), status="timed_out", error_code="task_timeout")
+        if business_run is not None:
+            business_service.fail(business_run, "case_review", "task_timeout", "用例评审任务超时。")
         return {"status": "timed_out", "record_id": str(record.pk), "task_id": task_id}
     except CaseReviewError as exc:
         record.refresh_from_db()
         _finish(record, "review_report", _runtime(record, task_id, "review_report"), status="failed", error_code="review_failed")
+        if business_run is not None:
+            business_service.fail(business_run, "case_review", "review_failed", str(exc))
         return {"status": "failed", "record_id": str(record.pk), "task_id": task_id, "error_code": "review_failed", "detail": str(exc)[:200]}
     except Exception:
         record.refresh_from_db()
         _finish(record, "review_report", _runtime(record, task_id, "review_report"), status="failed", error_code="task_error")
+        if business_run is not None:
+            business_service.fail(business_run, "case_review", "task_error", "用例评审任务失败。")
         return {"status": "failed", "record_id": str(record.pk), "task_id": task_id, "error_code": "task_error"}
 
 

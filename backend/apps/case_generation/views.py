@@ -16,12 +16,12 @@ from apps.case_generation.tasks import run_case_generation, run_case_review
 from apps.case_generation.selector import CaseSelectionError, select_generation_record
 from apps.case_generation.serializers import CaseGenerationRecordSerializer, ManualReviewCasesSerializer
 from apps.projects.permissions import is_platform_admin
-from apps.skills.orchestration import SkillExecutionService
 from apps.configs.models import ModelConfig, ModelRoutingPolicy
 from apps.configs.routing import ModelRouteError, ModelRouteResolver, required_model_types
 from apps.configs.serializers import SafeModelSummarySerializer
 from apps.requirement_analysis.permissions import RequirementPermission, can_manage_requirements
 from core.task_state import task_runtime, utc_now
+from apps.skills.business_execution import BusinessSkillRunError, BusinessSkillRunService, business_skill_execution
 
 
 class CaseGenerationViewSet(viewsets.ModelViewSet):
@@ -104,36 +104,64 @@ class CaseGenerationViewSet(viewsets.ModelViewSet):
         reviewed_test_point_ids = serializer.validated_data.get("reviewed_test_point_ids")
         if not can_manage_requirements(request.user, document.project):
             raise PermissionDenied("当前项目角色不能生成测试用例。")
+        business_run = None
         try:
             preferred_model_name = self._preferred_model_name(request, ModelRoutingPolicy.FeatureKey.CASE_GENERATION)
+            record = create_pending_generation_record(document, reviewed_test_point_ids=reviewed_test_point_ids)
+            business_run = BusinessSkillRunService().start(
+                user=request.user,
+                project_id=document.project_id,
+                workflow_key="requirement_to_case",
+                operation="case_generation",
+                business_type="case_generation_record",
+                business_id=record.pk,
+                input_snapshot={
+                    "document_id": str(document.pk),
+                    "document_version": document.version,
+                    "reviewed_test_point_ids": sorted(str(value) for value in (reviewed_test_point_ids or [])),
+                    "preferred_model_name": preferred_model_name or "",
+                },
+                node_id="case_generation",
+                skill_name="用例生成",
+            )
+            record.generation_run = business_run
+            record.save(update_fields=("generation_run",))
             if not settings.CELERY_TASK_ALWAYS_EAGER:
-                record = create_pending_generation_record(document, reviewed_test_point_ids=reviewed_test_point_ids)
                 task_id = uuid4().hex
                 runtime = task_runtime(task_id, "case_generation", status="pending", current_step="排队中", result_id=str(record.pk))
                 record.coverage_report = {**record.coverage_report, "task_runtime": runtime}
                 record.save(update_fields=("coverage_report",))
                 try:
-                    run_case_generation.apply_async(args=[str(record.pk), preferred_model_name, task_id], task_id=task_id)
-                except Exception:
+                    run_case_generation.apply_async(args=[str(record.pk), preferred_model_name, task_id, str(business_run.pk)], task_id=task_id)
+                except Exception as exc:
                     runtime.update({"status": "failed", "error_code": "task_enqueue_failed", "updated_at": utc_now()})
                     record.coverage_report = {**record.coverage_report, "task_runtime": runtime, "execution_status": "failed"}
                     record.status = CaseGenerationRecord.Status.FAILED
                     record.save(update_fields=("coverage_report", "status"))
+                    BusinessSkillRunService().fail(business_run, "case_generation", "task_enqueue_failed", str(exc))
                     return Response({"detail": "用例生成任务提交失败，请稍后重试。", "code": "task_enqueue_failed"}, status=503)
-                return Response({**self.get_serializer(record).data, "task_runtime": runtime}, status=202)
+                return Response({**self.get_serializer(record).data, "task_runtime": runtime, "skill_execution": business_skill_execution(business_run, "用例生成")}, status=202)
+            BusinessSkillRunService().mark_running(business_run, "case_generation")
             record = generate_document_cases(
                 document,
                 preferred_model_name=preferred_model_name,
                 reviewed_test_point_ids=reviewed_test_point_ids,
+                record=record,
             )
         except CaseGenerationError as exc:
+            if business_run is not None:
+                BusinessSkillRunService().fail(business_run, "case_generation", "generation_failed", str(exc))
             raise ValidationError({"detail": str(exc)}) from exc
-        skill = SkillExecutionService().execute(
-            "case_gen",
-            {"user_input": document.content_text or document.title, "project_id": str(document.project_id)},
+        except BusinessSkillRunError as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
+        BusinessSkillRunService().complete(
+            business_run,
+            "case_generation",
+            {"record_id": str(record.pk), "total_cases": record.total_cases, "rounds": record.rounds},
+            artifact_ref={"type": "case_generation_record", "id": str(record.pk)},
         )
         data = self.get_serializer(record).data
-        data["skill_execution"] = skill.as_dict() if skill else None
+        data["skill_execution"] = business_skill_execution(business_run, "用例生成")
         return Response(data, status=201)
 
     @action(detail=True, methods=("post",))
@@ -144,11 +172,31 @@ class CaseGenerationViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("当前项目角色不能评审测试用例。")
         if record.review_rounds >= 5 and isinstance(record.review_report, dict) and "approved" in record.review_report:
             return Response(self.get_serializer(record).data)
+        business_run = None
         try:
             preferred_model_name = self._preferred_model_name(request, ModelRoutingPolicy.FeatureKey.CASE_REVIEW)
             current_runtime = dict((record.review_report or {}).get("task_runtime") or {}) if isinstance(record.review_report, dict) else {}
             if current_runtime.get("status") in {"pending", "running", "cancel_requested"}:
                 return Response({"detail": "当前评审任务仍在处理中，请等待完成或先取消。", "task_runtime": current_runtime}, status=409)
+            business_run = BusinessSkillRunService().start(
+                user=request.user,
+                project_id=record.project_id,
+                workflow_key="requirement_to_case",
+                operation="case_review",
+                business_type="case_generation_record",
+                business_id=record.pk,
+                input_snapshot={
+                    "record_id": str(record.pk),
+                    "document_id": str(record.document_id),
+                    "generation_run_id": str(record.generation_run_id or ""),
+                    "case_count": len(record.cases or []),
+                    "preferred_model_name": preferred_model_name or "",
+                },
+                node_id="case_review",
+                skill_name="用例评审",
+            )
+            record.review_run = business_run
+            record.save(update_fields=("review_run",))
             if not settings.CELERY_TASK_ALWAYS_EAGER:
                 task_id = uuid4().hex
                 runtime = task_runtime(task_id, "case_review", status="pending", current_step="排队中", result_id=str(record.pk))
@@ -156,23 +204,31 @@ class CaseGenerationViewSet(viewsets.ModelViewSet):
                 record.status = CaseGenerationRecord.Status.REVIEWING
                 record.save(update_fields=("review_report", "status"))
                 try:
-                    run_case_review.apply_async(args=[str(record.pk), preferred_model_name, task_id], task_id=task_id)
-                except Exception:
+                    run_case_review.apply_async(args=[str(record.pk), preferred_model_name, task_id, str(business_run.pk)], task_id=task_id)
+                except Exception as exc:
                     runtime.update({"status": "failed", "error_code": "task_enqueue_failed", "updated_at": utc_now()})
                     record.review_report = {**record.review_report, "task_runtime": runtime, "execution_status": "failed"}
                     record.status = CaseGenerationRecord.Status.FAILED
                     record.save(update_fields=("review_report", "status"))
+                    BusinessSkillRunService().fail(business_run, "case_review", "task_enqueue_failed", str(exc))
                     return Response({"detail": "用例评审任务提交失败，请稍后重试。", "code": "task_enqueue_failed"}, status=503)
-                return Response({**self.get_serializer(record).data, "task_runtime": runtime}, status=202)
+                return Response({**self.get_serializer(record).data, "task_runtime": runtime, "skill_execution": business_skill_execution(business_run, "用例评审")}, status=202)
+            BusinessSkillRunService().mark_running(business_run, "case_review")
             record = review_generation_record(record, preferred_model_name=preferred_model_name)
         except CaseReviewError as exc:
+            if business_run is not None:
+                BusinessSkillRunService().fail(business_run, "case_review", "review_failed", str(exc))
             raise ValidationError({"detail": str(exc)}) from exc
-        skill = SkillExecutionService().execute(
+        except BusinessSkillRunError as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
+        BusinessSkillRunService().complete(
+            business_run,
             "case_review",
-            {"user_input": record.document.content_text or record.document.title, "cases": record.cases, "project_id": str(record.project_id)},
+            {"record_id": str(record.pk), "review_rounds": record.review_rounds, "issue_count": len((record.review_report or {}).get("issues", []))},
+            artifact_ref={"type": "case_review", "id": str(record.pk)},
         )
         data = self.get_serializer(record).data
-        data["skill_execution"] = skill.as_dict() if skill else None
+        data["skill_execution"] = business_skill_execution(business_run, "用例评审")
         return Response(data)
 
     @action(detail=True, methods=("post",), url_path="cancel")
